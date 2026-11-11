@@ -1,0 +1,6 @@
+.build/
+build/
+.swiftpm/
+*.seocrawl
+.DS_Store
+*.csv
