@@ -39,6 +39,161 @@ import Testing
 
     static func ids(_ a: CrawlAnalysis, _ i: IssueID) -> Set<Int32> { Set(a.issues[i] ?? []) }
 
+    // MARK: № 117, п. 4.1
+
+    @Test func everyIssueHasHowToFix() {
+        let t = Thresholds()
+        for id in IssueID.allCases {
+            let fix = id.howToFix(t).trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(!fix.isEmpty, "\(id)")
+            #expect(fix != id.title(t), "\(id)")
+        }
+    }
+
+    // MARK: № 103, п. 1.4
+
+    @Test func metaRefreshParsing() {
+        #expect(HTMLAnalyzer.parseMetaRefresh("0; url=/about/")?.url == "/about/")
+        #expect(HTMLAnalyzer.parseMetaRefresh("0;URL='/x y'")?.url == "/x y")
+        #expect(HTMLAnalyzer.parseMetaRefresh(" 5 , url = \"https://e.com/\" ")?.url == "https://e.com/")
+        #expect(HTMLAnalyzer.parseMetaRefresh("0; /plain")?.url == "/plain")
+        let reload = HTMLAnalyzer.parseMetaRefresh("30")
+        #expect(reload?.delay == 30 && reload?.url == nil)
+        #expect(HTMLAnalyzer.parseMetaRefresh("3.5; url=/a")?.delay == 3)
+        #expect(HTMLAnalyzer.parseMetaRefresh("url=/a") == nil)
+        #expect(HTMLAnalyzer.parseMetaRefresh("0url=/a") == nil)
+    }
+
+    static func record(_ contentType: String?, _ body: String, url: String = "https://e.com/p") -> PageRecord {
+        var res = FetchResult()
+        res.statusCode = 200
+        if let contentType { res.headers["content-type"] = contentType }
+        res.body = Data(body.utf8)
+        let job = Crawler.Job(item: QueueItem(id: 1, depth: 0, priority: 0, seq: 0), url: url, normalizer: URLNormalizer())
+        return Crawler.buildRecord(job: job, url: URL(string: url)!, res: res).0
+    }
+
+    @Test func contentTypeAndRefreshTargetInRecord() {
+        let html = "<!doctype html><html><head><title>T</title><base href=\"https://e.com/dir/\"><meta http-equiv=\"refresh\" content=\"0; url=next\"></head><body></body></html>"
+        let normal = Self.record("text/html; charset=utf-8", html)
+        #expect(normal.sniffedHTML == nil)
+        // Адрес перехода — относительно <base>.
+        #expect(normal.html?.metaRefreshURL == "https://e.com/dir/next")
+        // text/plain с HTML не разбирается, но отмечается; без заголовка — разбирается и отмечается.
+        let plain = Self.record("text/plain; charset=utf-8", "\u{FEFF}<!-- x -->\n" + html)
+        #expect(plain.sniffedHTML == true && plain.html == nil)
+        let untyped = Self.record(nil, html)
+        #expect(untyped.sniffedHTML == true && untyped.html != nil)
+        // Текст с примером HTML внутри — не страница.
+        #expect(Self.record("text/plain", "Пример кода: <html><head></head></html>").sniffedHTML == nil)
+        #expect(Self.record("text/plain", "<header>не HTML-документ</header>").sniffedHTML == nil)
+    }
+
+    @Test func metaRefreshAndContentTypeChecks() {
+        let clean = Self.page(0, "https://e.com/")
+        let refresh = Self.page(1, "https://e.com/r") { $0.metaRefresh = "0; url=/about/"; $0.metaRefreshURL = "https://e.com/about/" }
+        let reload = Self.page(2, "https://e.com/live") { $0.metaRefresh = "60" }
+        var plain = PageRecord(id: 3, url: "https://e.com/plain", state: .fetched)
+        plain.statusCode = 200
+        plain.contentType = "text/plain"
+        plain.sniffedHTML = true
+        var untyped = Self.page(4, "https://e.com/untyped")
+        untyped.sniffedHTML = true
+        let ignored = Self.page(5, "https://e.com/empty-refresh") { $0.metaRefresh = "" }
+        let a = CrawlAnalyzer.analyze(Self.crawl([clean, refresh, reload, plain, untyped, ignored]))
+        #expect(Self.ids(a, .metaRefresh) == [1, 2])
+        #expect(Self.ids(a, .nonHTMLContentType) == [3, 4])
+        #expect(refresh.html?.metaRefreshSummary == "переход на https://e.com/about/ через 0 с")
+        #expect(reload.html?.metaRefreshSummary == "перезагрузка этой же страницы через 60 с")
+        #expect(IssueID.metaRefresh.severity == .warning && IssueID.nonHTMLContentType.severity == .warning)
+    }
+
+    // MARK: № 104, п. 1.5
+
+    @Test func sitemapChecks() {
+        let pages = [
+            Self.page(0, "https://e.com/"), Self.page(1, "https://e.com/out"), Self.page(2, "https://e.com/twice"),
+            Self.page(3, "https://e.com/closed") { $0.metaRobots = ["noindex"] },
+        ]
+        var d = Self.crawl(pages)
+        d.sitemapIds = [0, 2]
+        d.addSitemapFiles([
+            SitemapEntry(id: 0, file: "https://e.com/a.xml"), SitemapEntry(id: 2, file: "https://e.com/a.xml"),
+            SitemapEntry(id: 2, file: "https://e.com/b.xml"), SitemapEntry(id: 2, file: "https://e.com/b.xml"),
+        ])
+        #expect(d.sitemapFiles[2] == ["https://e.com/a.xml", "https://e.com/b.xml"])
+        var a = CrawlAnalyzer.analyze(d)
+        // Закрытая noindex страница вне sitemap — не проблема.
+        #expect(Self.ids(a, .notInSitemap) == [1])
+        #expect(Self.ids(a, .inMultipleSitemaps) == [2])
+        #expect(IssueID.notInSitemap.severity == .notice && IssueID.inMultipleSitemaps.severity == .notice)
+        // Sitemap не загрузился — «не в sitemap» молчит.
+        d.sitemapIds = []
+        a = CrawlAnalyzer.analyze(d)
+        #expect(Self.ids(a, .notInSitemap).isEmpty)
+    }
+
+    /// Файл обхода до 2026-11-12: таблицы sitemap_files нет, а при открытии только для чтения она не создаётся.
+    @Test func storeWithoutSitemapFilesTable() throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("seopars-old-\(UUID().uuidString).seocrawl")
+        defer {
+            for suffix in ["", "-wal", "-shm"] { try? FileManager.default.removeItem(atPath: file.path + suffix) }
+        }
+        let store = try CrawlStore.create(at: file, config: CrawlConfig())
+        try store.write(StoreWrite(sitemapIds: [0], meta: [:]))
+        try store.db.exec("DROP TABLE sitemap_files")
+        let old = try CrawlStore.open(at: file, readOnly: true).load()
+        #expect(old.sitemapIds == [0] && old.sitemapFiles.isEmpty)
+    }
+
+    // MARK: № 112, п. 2.8
+
+    @Test func headScan() {
+        var r = HTMLAnalyzer.scanHead("""
+        <!doctype html><html><head><title>T</title><img src=x><link rel="canonical" href="/a"><meta name="ROBOTS" content="noindex"></head><body></body></html>
+        """)
+        #expect(r.breaker == "<img>" && r.hidden == ["canonical", "meta robots"] && r.headCount == 1 && r.bodyCount == 1)
+        // Код Метрики в noscript, «<body>» в скрипте и в комментарии не в счёт; <header> — не <head>.
+        r = HTMLAnalyzer.scanHead("""
+        <html><head><script>var s='<body><div>';</script><noscript><div><img src=x></div></noscript><!-- <body> -->\
+        <link rel=canonical href=/a></head><body><header>h</header></body></html>
+        """)
+        #expect(r.breaker == nil && r.headCount == 1 && r.bodyCount == 1)
+        // Недопустимый элемент после canonical ничего не прячет.
+        r = HTMLAnalyzer.scanHead("<head><link rel=canonical href=/a><div>x</div></head><body></body>")
+        #expect(r.breaker == nil && r.hidden.isEmpty)
+        // Текст в head тоже его обрывает; регистр тегов не важен.
+        r = HTMLAnalyzer.scanHead("<HEAD><title>T</title>&nbsp;<META NAME=robots CONTENT=noindex></HEAD><BODY>")
+        #expect(r.breaker == "текст «&nbsp;»" && r.hidden == ["meta robots"])
+        // «>» в значении атрибута не закрывает тег; два body; head нет.
+        r = HTMLAnalyzer.scanHead("<html><meta content=\"a>b\" name=x><body><p>1</p><body class=w></html>")
+        #expect(r.headCount == 0 && r.bodyCount == 2 && r.breaker == nil)
+        // Теги внутри title — текст.
+        r = HTMLAnalyzer.scanHead("<head><title><b>T</b></title><link rel=canonical href=/a></head><body>")
+        #expect(r.breaker == nil)
+    }
+
+    @Test func headChecks() {
+        func page(_ id: Int32, head: Int, body: Int, breaker: String? = nil) -> PageRecord {
+            Self.page(id, "https://e.com/\(id)") {
+                $0.headCount = head
+                $0.bodyCount = body
+                $0.headBreaker = breaker
+                $0.headHiddenTags = breaker == nil ? [] : ["canonical"]
+            }
+        }
+        let a = CrawlAnalyzer.analyze(Self.crawl([
+            page(0, head: 1, body: 1), page(1, head: 1, body: 1, breaker: "<img>"),
+            page(2, head: 1, body: 2), page(3, head: 2, body: 1), page(4, head: 0, body: 1), page(5, head: 1, body: 0),
+        ]))
+        #expect(Self.ids(a, .headInvalidElement) == [1])
+        #expect(Self.ids(a, .headBodyMultiple) == [2, 3])
+        #expect(Self.ids(a, .headBodyMissing) == [4, 5])
+        #expect(IssueID.headInvalidElement.severity == .error && IssueID.headInvalidElement.group == .markup)
+        let p = HTMLAnalyzer.parse("<html><head><title>T</title><img src=x><link rel=canonical href=/a></head><body></body></html>").info
+        #expect(p.headBreaker == "<img>" && p.headMarkupSummary == "<head> обрывается на <img>, после него: canonical")
+    }
+
     // MARK: № 113, п. 2.9
 
     @Test func imageAltKinds() {

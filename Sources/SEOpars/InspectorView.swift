@@ -122,13 +122,22 @@ struct SummaryPane: View {
         if !robotsRule.isEmpty { r.append(("Правило robots.txt", robotsRule)) }
         if let red = page.redirectURL { r.append(("Редирект на", URLNormalizer.display(red))) }
         r.append(("Индексируемость", m?.indexability.title ?? "—"))
-        r.append(("Тип / кодировка", [page.contentType, page.charset].filter { !$0.isEmpty }.joined(separator: " · ")))
+        var type = [page.contentType, page.charset].filter { !$0.isEmpty }.joined(separator: " · ")
+        if page.sniffedHTML == true {
+            type += page.headers["content-type"] == nil ? "\nзаголовка Content-Type нет, внутри HTML" : "\nвнутри HTML, а Content-Type не text/html"
+        }
+        r.append(("Тип / кодировка", type))
         r.append(("Время ответа", "\(page.responseTimeMs) мс"))
         r.append(("Размер", String(format: "%.1f КБ", Double(page.sizeBytes) / 1024) + (page.truncated ? " (обрезано)" : "")))
         r.append(("Глубина", m?.depth.map(String.init) ?? "— (не найдена по ссылкам от стартовой)"))
         r.append(("Входящие ссылки", "\(m?.inlinks ?? 0), с уникальных страниц: \(m?.uniqueInlinks ?? 0)"))
         r.append(("Исходящие", "внутренних \(m?.outInternal ?? 0), внешних \(m?.outExternal ?? 0)"))
-        r.append(("В sitemap", session.data.sitemapIds.contains(page.id) ? "да" : "нет"))
+        let sitemapFiles = (session.data.sitemapFiles[page.id] ?? []).map(URLNormalizer.display)
+        switch sitemapFiles.count {
+        case 0: r.append(("В sitemap", session.data.sitemapIds.contains(page.id) ? "да" : "нет"))
+        case 1: r.append(("В sitemap", "да: \(sitemapFiles[0])"))
+        default: r.append(("В sitemap", "да, в \(sitemapFiles.count) файлах:\n" + sitemapFiles.joined(separator: "\n")))
+        }
         guard let h = page.html else { return r }
         r.append(("", ""))
         r.append(("Title", lengthLabel(h.title, min: t.titleMin, max: t.titleMax) + (h.titles.count > 1 ? " · title на странице: \(h.titles.count)" : "")))
@@ -150,7 +159,8 @@ struct SummaryPane: View {
         let og = [h.ogTitle.map { "title: \($0)" }, h.ogDescription.map { "description: \($0)" }, h.ogImage.map { "image: \($0)" }].compactMap { $0 }
         if !og.isEmpty { r.append(("Open Graph", og.joined(separator: "\n"))) }
         if let tw = h.twitterCard { r.append(("Twitter Card", tw)) }
-        if let refresh = h.metaRefresh { r.append(("Meta refresh", refresh)) }
+        if let refresh = h.metaRefresh, let summary = h.metaRefreshSummary { r.append(("Meta refresh", "\(summary)\nв коде: \(refresh)")) }
+        if let markup = h.headMarkupSummary { r.append(("Разметка head", markup)) }
         r.append(("Слов", "\(h.wordCount)"))
         r.append(("Картинки", "\(h.imagesCount), без alt: \(h.imagesWithoutAlt), пустой alt: \(h.imagesEmptyAlt), alt длиннее \(t.altMax): \(h.longAltCount(max: t.altMax))"))
         if !h.imagesWithoutAltSamples.isEmpty { r.append(("Без alt", h.imagesWithoutAltSamples.prefix(5).joined(separator: "\n"))) }

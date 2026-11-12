@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Тестовый сайт для SEOpars: редиректы, 404/500, robots.txt, sitemap, кириллица,
-windows-1251, utm, дубли по слэшу и регистру, сирота, глубокие страницы, петля.
+"""Тестовый сайт для SEOpars: редиректы, 404/500, robots.txt, sitemap из двух файлов, кириллица,
+windows-1251, utm, дубли по слэшу и регистру, сирота, глубокие страницы, петля, meta refresh,
+HTML с неверным Content-Type, ошибки разметки head и body.
 Запуск: python3 -I fixture_server.py [порт]"""
 import sys, time
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -52,6 +53,9 @@ ROUTES = {
         <a href="/hreflang/no-self-ru">Hreflang без себя</a> <a href="/hreflang/no-xdefault">Hreflang без x-default</a>
         <a href="/hreflang/broken">Hreflang на 404</a> <a href="/hreflang/bad-code">Hreflang с неверным кодом</a>
         <a href="/nofollow-only" rel="nofollow">Только nofollow</a> <a href="/dead-end">Тупик</a>
+        <a href="/meta-refresh">Meta refresh</a> <a href="/plain-html">HTML как text/plain</a> <a href="/no-content-type">Без Content-Type</a>
+        <a href="/head-img">Картинка в head</a> <a href="/head-noscript">Счётчик в head</a>
+        <a href="/two-bodies">Два body</a> <a href="/no-head-body">Без head и body</a>
         """), "text/html; charset=utf-8"),
     "/about/": (200, page("О компании — тестовый сайт SEOpars для парсера", "О компании", LOREM), "text/html; charset=utf-8"),
     "/about": (200, page("О компании — тестовый сайт SEOpars для парсера", "О компании", LOREM), "text/html; charset=utf-8"),
@@ -103,7 +107,27 @@ ROUTES = {
     "/from-noindex": (200, page("Страница со ссылкой только с noindex на сайте SEOpars", "Ссылка только с noindex", LOREM), "text/html; charset=utf-8"),
     "/dead-end": (200, page("Тупик без внутренних ссылок на тестовом сайте SEOpars", "Тупик", LOREM
         + '<a href="/dead-end">Эта же страница</a> <a href="https://external.example.org/">Внешняя</a>', bare=True), "text/html; charset=utf-8"),
+    # № 103: переход по meta refresh; HTML с Content-Type text/plain; HTML без заголовка Content-Type.
+    "/meta-refresh": (200, page("Переход по meta refresh на тестовом сайте SEOpars", "Meta refresh", LOREM,
+        extra_head='<meta http-equiv="refresh" content="0; url=/about/">'), "text/html; charset=utf-8"),
+    "/plain-html": (200, page("HTML с Content-Type text/plain на сайте SEOpars", "HTML как текст", LOREM), "text/plain; charset=utf-8"),
+    "/no-content-type": (200, page("HTML без заголовка Content-Type на сайте SEOpars", "Без Content-Type", LOREM), None),
+    # № 112: <img> в <head> перед canonical; счётчик в <noscript> в <head> — не ошибка; два <body>.
+    "/head-img": (200, page("Картинка в head перед canonical на сайте SEOpars", "Картинка в head", LOREM,
+        extra_head=f'<img src="/pixel.gif" alt="Пиксель счётчика"><link rel="canonical" href="{BASE}/head-img">'), "text/html; charset=utf-8"),
+    "/head-noscript": (200, page("Счётчик в noscript в head на сайте SEOpars", "Счётчик в head", LOREM,
+        extra_head='<script>(function(){ var counter = "<body>"; })();</script><noscript><div><img src="https://mc.example.org/watch/1" style="position:absolute; left:-9999px;" alt="" /></div></noscript>'),
+        "text/html; charset=utf-8"),
+    "/two-bodies": (200, page("Два тега body на тестовом сайте SEOpars парсер", "Два body", '<body class="widget">' + LOREM), "text/html; charset=utf-8"),
 }
+
+# № 112: без <head> и <body> — HTML это разрешает, проверка отмечает.
+ROUTES["/no-head-body"] = (200, f"""<!doctype html><html lang="ru"><meta charset="utf-8">
+<title>Страница без head и body на тестовом сайте SEOpars</title>
+<meta name="description" content="Описание страницы тестового сайта SEOpars для проверки парсера, достаточно длинное.">
+<link rel="canonical" href="{BASE}/no-head-body">
+<header><a href="/">Главная</a></header>
+<main><h1>Без head и body</h1>{LOREM}<h2>Подробнее: без head и body</h2></main></html>""", "text/html; charset=utf-8")
 
 # № 101: правильная пара ru/ ↔ en/ и по странице на каждую ошибку. en/, no-self-en и missing-en (404)
 # находятся только через hreflang — так проверяется, что обходчик ставит цели hreflang в очередь.
@@ -135,7 +159,11 @@ Sitemap: {BASE}/sitemap.xml
 """
 SITEMAP_INDEX = f"""<?xml version="1.0" encoding="UTF-8"?>
 <sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-<sitemap><loc>{BASE}/sitemap-pages.xml</loc></sitemap></sitemapindex>"""
+<sitemap><loc>{BASE}/sitemap-pages.xml</loc></sitemap><sitemap><loc>{BASE}/sitemap-extra.xml</loc></sitemap></sitemapindex>"""
+# № 104: /about/ записан и здесь, и в sitemap-pages.xml.
+SITEMAP_EXTRA = f"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<url><loc>{BASE}/about/</loc></url></urlset>"""
 SITEMAP_PAGES = f"""<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 <url><loc>{BASE}/</loc></url><url><loc>{BASE}/about/</loc></url>
@@ -176,6 +204,7 @@ class H(BaseHTTPRequestHandler):
         if path == "/robots.txt": return self.send(200, ROBOTS, "text/plain; charset=utf-8")
         if path == "/sitemap.xml": return self.send(200, SITEMAP_INDEX, "application/xml")
         if path == "/sitemap-pages.xml": return self.send(200, SITEMAP_PAGES, "application/xml")
+        if path == "/sitemap-extra.xml": return self.send(200, SITEMAP_EXTRA, "application/xml")
         if path.startswith("/gen/"):
             return self.send(200, gen_page(path), "text/html; charset=utf-8")
         if path == "/win1251": return self.send(200, with_canonical(path, WIN1251).encode("cp1251"), "text/html")

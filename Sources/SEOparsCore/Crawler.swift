@@ -317,9 +317,16 @@ public actor Crawler {
             }
             let parsed = SitemapParser.parse(res.body)
             queue += parsed.sitemaps
+            var inThisFile = Set<Int32>()
             for u in parsed.urls {
                 guard let n = normalizer.normalize(u) else { continue }
                 let (id, _) = intern(n)
+                // Пара «URL — файл» до проверки на новизну URL: иначе второй файл с тем же URL не запомнится (№ 104).
+                if inThisFile.insert(id).inserted {
+                    let entry = SitemapEntry(id: id, file: sm)
+                    pendingBatch.sitemapFiles.append(entry)
+                    pendingWrite.sitemapFiles.append(entry)
+                }
                 if sitemapSet.insert(id).inserted {
                     pendingBatch.sitemapIds.append(id)
                     pendingWrite.sitemapIds.append(id)
@@ -467,8 +474,10 @@ public actor Crawler {
         let wait = await reserveSlot()
         if wait > .zero { try? await Task.sleep(for: wait) }
 
+        // text/plain тоже скачивается: в нём бывает HTML с неверным Content-Type (№ 103).
         let res = await fetcher.fetch(url, userAgent: config.userAgent, maxBytes: config.maxBodyBytes) { ct in
-            ct.isEmpty || ct.lowercased().contains("html")
+            let c = ct.lowercased()
+            return c.isEmpty || c.contains("html") || c.hasPrefix("text/plain")
         }
         let (record, links, html) = Self.buildRecord(job: job, url: url, res: res, zoneRules: config.zoneRules)
         await complete(job, record, links, html)
@@ -507,14 +516,22 @@ public actor Crawler {
         }
 
         let ct = res.contentType.lowercased()
-        let looksHTML = ct.contains("html") || (ct.isEmpty && Self.sniffHTML(res.body))
-        if (200..<300).contains(res.statusCode), looksHTML, !res.body.isEmpty {
+        let untypedHTML = ct.isEmpty && Self.sniffHTML(res.body)
+        // HTML с text/plain не разбирается: браузер покажет его текстом. Без заголовка — разбирается, как и раньше.
+        let plainHTML = ct.hasPrefix("text/plain") && Self.startsLikeHTML(res.body)
+        let ok = (200..<300).contains(res.statusCode)
+        if ok, untypedHTML || plainHTML { rec.sniffedHTML = true }
+        let looksHTML = ct.contains("html") || untypedHTML
+        if ok, looksHTML, !res.body.isEmpty {
             let (text, charset) = HTMLTextDecoder.decode(res.body, contentType: res.contentType)
             rec.charset = charset
             if ct.isEmpty { rec.contentType = "text/html" }
             let parsed = HTMLAnalyzer.parse(text, zoneRules: zoneRules)
             rec.html = parsed.info
             let base = parsed.baseHref.flatMap { URL(string: $0, relativeTo: url)?.absoluteURL } ?? url
+            if let raw = parsed.info.metaRefresh, let target = HTMLAnalyzer.parseMetaRefresh(raw)?.url {
+                rec.html?.metaRefreshURL = job.normalizer.normalize(target, base: base) ?? target
+            }
             for l in parsed.links {
                 if let n = job.normalizer.normalize(l.href, base: base) {
                     links.append(ResolvedLink(url: n, anchor: l.anchor, rel: l.rel, kind: l.kind, zone: l.zone))
@@ -540,6 +557,23 @@ public actor Crawler {
     static func sniffHTML(_ data: Data) -> Bool {
         let head = String(decoding: data.prefix(512), as: UTF8.self).lowercased()
         return head.contains("<html") || head.contains("<!doctype html") || head.contains("<head")
+    }
+
+    /// Строже, чем `sniffHTML`: документ начинается с `<!doctype html`, `<html` или `<head` (после BOM, пробелов
+    /// и комментариев). Для text/plain, чтобы текст с примером HTML-кода внутри не считался страницей.
+    static func startsLikeHTML(_ data: Data) -> Bool {
+        var s = Substring(String(decoding: data.prefix(2048), as: UTF8.self).lowercased())
+        while true {
+            s = s.drop(while: { $0.isWhitespace || $0 == "\u{FEFF}" })
+            guard s.hasPrefix("<!--"), let end = s.range(of: "-->") else { break }
+            s = s[end.upperBound...]
+        }
+        if s.hasPrefix("<!doctype html") { return true }
+        for tag in ["<html", "<head"] where s.hasPrefix(tag) {
+            let after = s.dropFirst(tag.count).first
+            if after == nil || after == ">" || after!.isWhitespace { return true }
+        }
+        return false
     }
 
     static func canonicalFromLinkHeader(_ header: String) -> String? {

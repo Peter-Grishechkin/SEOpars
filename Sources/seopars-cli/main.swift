@@ -74,14 +74,16 @@ func report(_ file: URL, csvDir: String?) throws {
     let links = data.links.enumerated().map { LinkRow.make($0.offset, $0.element, data) }
     try CSVWriter.make(links, columns: CSVColumns.links).write(to: out.appendingPathComponent("links.csv"))
     try CSVWriter.make(RedirectRow.build(data, a), columns: CSVColumns.redirects).write(to: out.appendingPathComponent("redirects.csv"))
-    struct IssueLine { var issue: String; var severity: String; var url: String }
+    struct IssueLine { var issue: String; var severity: String; var url: String; var fix: String }
     var lines: [IssueLine] = []
     for id in IssueID.allCases {
+        let fix = id.howToFix(t)
         for pid in a.issues[id] ?? [] {
-            lines.append(IssueLine(issue: id.title(t), severity: id.severity.title, url: URLNormalizer.display(data.url(pid))))
+            lines.append(IssueLine(issue: id.title(t), severity: id.severity.title, url: URLNormalizer.display(data.url(pid)), fix: fix))
         }
     }
-    try CSVWriter.make(lines, columns: [.init("Проблема") { $0.issue }, .init("Важность") { $0.severity }, .init("URL") { $0.url }])
+    try CSVWriter.make(lines, columns: [.init("Проблема") { $0.issue }, .init("Важность") { $0.severity }, .init("URL") { $0.url },
+                                        .init("Как исправить") { $0.fix }])
         .write(to: out.appendingPathComponent("issues.csv"))
     print("CSV: \(out.path)")
 }

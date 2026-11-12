@@ -179,6 +179,29 @@ import Testing
         #expect(back.html?.imagesWithoutAlt == 2)
         #expect(back.html?.imagesEmptyAlt == 0 && back.html?.altLengths == [])
     }
+
+    /// № 103 и № 112: записи страниц до 2026-11-12 без новых полей читаются, проверки head по ним молчат.
+    @Test func pageWithoutHeadAndContentTypeFields() throws {
+        var p = PageRecord(id: 0, url: "https://e.com/", state: .fetched)
+        p.statusCode = 200
+        p.contentType = "text/html"
+        p.sniffedHTML = true
+        var info = HTMLInfo()
+        info.titles = ["Старый обход"]
+        info.headCount = 1
+        info.bodyCount = 1
+        info.headHiddenTags = ["canonical"]
+        p.html = info
+        let data = try json(p, removing: ["sniffedHTML", "html.headCount", "html.bodyCount", "html.headHiddenTags"])
+        let back = try JSONDecoder().decode(PageRecord.self, from: data)
+        #expect(back.sniffedHTML == nil && back.html?.headCount == nil && back.html?.bodyCount == nil && back.html?.headHiddenTags == [])
+        var d = CrawlData(config: CrawlConfig())
+        d.urls = [back.url]
+        d.pages = [back]
+        d.pageIndex = [0: 0]
+        let issues = CrawlAnalyzer.analyze(d).metrics[0]?.issues ?? []
+        #expect(!issues.contains(.headBodyMissing) && !issues.contains(.headBodyMultiple) && !issues.contains(.nonHTMLContentType))
+    }
 }
 
 @Suite struct CSVTests {
@@ -264,6 +287,47 @@ final class StubProtocol: URLProtocol, @unchecked Sendable {
         #expect(reopened.data.links.count == session.data.links.count)
         #expect(reopened.rows.count == 33)
         #expect(reopened.html(for: session.data.startId ?? 0)?.contains("Главная") == true)
+    }
+
+    /// № 104 и № 103 на настоящем обходчике: файлы sitemap по URL доходят до анализа и файла обхода,
+    /// HTML с text/plain скачивается и отмечается.
+    @Test @MainActor func sitemapFilesAndPlainHTML() async throws {
+        let html = ["Content-Type": "text/html; charset=utf-8"]
+        let xml = ["Content-Type": "application/xml"]
+        let ns = "xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\""
+        StubProtocol.routes = [
+            "/robots.txt": (200, ["Content-Type": "text/plain"], "User-agent: *\nSitemap: http://stub.test/sitemap.xml\n"),
+            "/sitemap.xml": (200, xml, "<sitemapindex \(ns)><sitemap><loc>http://stub.test/a.xml</loc></sitemap><sitemap><loc>http://stub.test/b.xml</loc></sitemap></sitemapindex>"),
+            // /both дважды в a.xml — это один файл.
+            "/a.xml": (200, xml, "<urlset \(ns)><url><loc>http://stub.test/</loc></url><url><loc>http://stub.test/both</loc></url><url><loc>http://stub.test/both</loc></url></urlset>"),
+            "/b.xml": (200, xml, "<urlset \(ns)><url><loc>http://stub.test/both</loc></url></urlset>"),
+            "/": (200, html, "<html><head><title>Главная</title></head><body><a href=\"/both\">Обе</a> <a href=\"/plain\">Текст</a></body></html>"),
+            "/both": (200, html, "<html><head><title>Обе</title></head><body><a href=\"/\">Главная</a></body></html>"),
+            "/plain": (200, ["Content-Type": "text/plain; charset=utf-8"], "<!doctype html><html><head><title>Текст</title></head><body></body></html>"),
+        ]
+        var cfg = CrawlConfig()
+        cfg.startURL = "http://stub.test/"
+        cfg.delayMs = 0
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("seopars-tests-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let session = CrawlSession(config: cfg, protocolClasses: [StubProtocol.self])
+        session.analysisInterval = .milliseconds(50)
+        try session.start(in: dir)
+        await session.waitUntilIdle()
+
+        let both = try #require(session.data.pages.first { $0.url == "http://stub.test/both" })
+        let home = try #require(session.data.pages.first { $0.url == "http://stub.test/" })
+        let plain = try #require(session.data.pages.first { $0.url == "http://stub.test/plain" })
+        #expect(session.data.sitemapFiles[both.id] == ["http://stub.test/a.xml", "http://stub.test/b.xml"])
+        #expect(session.data.sitemapFiles[home.id] == ["http://stub.test/a.xml"])
+        #expect(session.analysis.issues[.inMultipleSitemaps] == [both.id])
+        #expect(plain.sniffedHTML == true && plain.html == nil)
+        #expect(session.analysis.issues[.nonHTMLContentType] == [plain.id])
+
+        let reopened = try CrawlSession.open(try #require(session.fileURL), protocolClasses: [StubProtocol.self])
+        await reopened.waitUntilIdle()
+        #expect(reopened.data.sitemapFiles == session.data.sitemapFiles)
     }
 
     @Test @MainActor func pauseAndResume() async throws {

@@ -16,6 +16,13 @@ public enum HTMLAnalyzer {
         var links: [RawLink] = []
         var baseHref: String?
 
+        // До SwiftSoup: он сам исправляет разметку и прячет ошибки <head> (№ 112).
+        let head = scanHead(html)
+        info.headCount = head.headCount
+        info.bodyCount = head.bodyCount
+        info.headBreaker = head.breaker
+        info.headHiddenTags = head.hidden
+
         guard let doc = try? SwiftSoup.parse(html) else {
             return Result(info: info, links: [], baseHref: nil)
         }
@@ -146,6 +153,218 @@ public enum HTMLAnalyzer {
 
     static func clean(_ s: String) -> String {
         s.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    }
+
+    // MARK: - Meta refresh (№ 103)
+
+    /// Разбор `content` у meta refresh по шагам HTML Living Standard («shared declarative refresh steps»), упрощённо:
+    /// `0; url=/x`, `0;URL='/x'`, `0, /x`, `5` (перезагрузка той же страницы). `nil` — значение браузер не примет.
+    public static func parseMetaRefresh(_ content: String) -> (delay: Double, url: String?)? {
+        var s = Substring(content).drop(while: \.isWhitespace)
+        // Время — целые секунды; дробная часть по стандарту отбрасывается. «.5» — тоже 0.
+        let digits = s.prefix(while: { $0.isASCII && $0.isNumber })
+        guard !digits.isEmpty || s.first == "." else { return nil }
+        let delay = Double(digits) ?? 0
+        s = s.drop(while: { ($0.isASCII && $0.isNumber) || $0 == "." })
+        if s.isEmpty { return (delay, nil) }
+        guard let sep = s.first, sep.isWhitespace || sep == ";" || sep == "," else { return nil }
+        s = s.drop(while: \.isWhitespace)
+        if s.first == ";" || s.first == "," { s = s.dropFirst() }
+        s = s.drop(while: \.isWhitespace)
+        if s.lowercased().hasPrefix("url") {
+            let rest = s.dropFirst(3).drop(while: \.isWhitespace)
+            if rest.first == "=" { s = rest.dropFirst().drop(while: \.isWhitespace) }
+        }
+        if let q = s.first, q == "'" || q == "\"" {
+            s = s.dropFirst()
+            if let end = s.firstIndex(of: q) { s = s[..<end] }
+        }
+        let url = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (delay, url.isEmpty ? nil : url)
+    }
+
+    // MARK: - Разметка <head> по исходным тегам (№ 112)
+
+    public struct HeadScan: Sendable, Equatable {
+        public var headCount = 0
+        public var bodyCount = 0
+        /// Первый недопустимый элемент в области `<head>`, если после него стоят canonical или meta robots.
+        public var breaker: String?
+        public var hidden: [String] = []
+    }
+
+    /// Элементы, которые парсер HTML оставляет в `<head>` (HTML Living Standard, режим «in head»).
+    /// Google Search Central «Use valid HTML elements in the head» (проверено 2026-11-12) называет допустимыми
+    /// title, meta, link, script, style, base, noscript, template: на первом недопустимом элементе Google считает
+    /// `<head>` законченным и следующие за ним элементы не читает.
+    static let headElements: Set<String> = ["base", "basefont", "bgsound", "link", "meta", "title", "noscript", "noframes", "style", "script", "template"]
+    /// Содержимое этих элементов — текст, а не разметка: теги внутри не считаются. `noscript` тоже: при включённом
+    /// JavaScript браузер и Google (рендер с JS) читают его как текст, а в `<head>` он допустим. Иначе стандартный код
+    /// Яндекс Метрики (`<noscript><div><img …></div></noscript>` в `<head>`) давал бы ошибку почти на каждом сайте.
+    /// Предположение: что Google делает с noscript до рендера, в документации не сказано.
+    static let rawTextElements: Set<String> = ["script", "style", "noscript", "template", "textarea", "title", "xmp", "iframe", "noembed", "noframes", "plaintext"]
+
+    /// Считает `<head>` и `<body>` и ищет элемент, который закрывает `<head>` раньше canonical или meta robots.
+    /// Область `<head>` — то, что автор считал головой страницы: от начала до `</head>` или `<body>`.
+    public static func scanHead(_ html: String) -> HeadScan {
+        var r = HeadScan()
+        let b = Array(html.utf8)
+        let n = b.count
+        let lt = UInt8(ascii: "<"), gt = UInt8(ascii: ">"), slash = UInt8(ascii: "/"), bang = UInt8(ascii: "!"), question = UInt8(ascii: "?")
+        func isSpace(_ c: UInt8) -> Bool { c == 32 || c == 9 || c == 10 || c == 12 || c == 13 }
+        func isLetter(_ c: UInt8) -> Bool { (c >= 65 && c <= 90) || (c >= 97 && c <= 122) }
+        func lower(_ c: UInt8) -> UInt8 { c >= 65 && c <= 90 ? c + 32 : c }
+        /// Поиск без учёта регистра букв; `needle` — в нижнем регистре.
+        func find(_ needle: [UInt8], from: Int) -> Int? {
+            guard !needle.isEmpty, from <= n - needle.count else { return nil }
+            var j = from
+            while j <= n - needle.count {
+                if lower(b[j]) == needle[0] {
+                    var k = 1
+                    while k < needle.count, lower(b[j + k]) == needle[k] { k += 1 }
+                    if k == needle.count { return j }
+                }
+                j += 1
+            }
+            return nil
+        }
+        /// Конец тега: `>` вне значения атрибута в кавычках.
+        func tagEnd(from: Int) -> Int {
+            var j = from
+            while j < n {
+                let c = b[j]
+                if c == gt { return j }
+                if c == UInt8(ascii: "=") {
+                    j += 1
+                    while j < n, isSpace(b[j]) { j += 1 }
+                    if j < n, b[j] == UInt8(ascii: "\"") || b[j] == UInt8(ascii: "'") {
+                        let q = b[j]
+                        j += 1
+                        while j < n, b[j] != q { j += 1 }
+                    }
+                }
+                j += 1
+            }
+            return n
+        }
+
+        var headOpen = true
+        var breaker: String?
+        var hidden: [String] = []
+        var i = 0
+        if n >= 3, b[0] == 0xEF, b[1] == 0xBB, b[2] == 0xBF { i = 3 }
+        while i < n {
+            let c = b[i]
+            if c != lt || i + 1 >= n {
+                if headOpen, breaker == nil, !isSpace(c) {
+                    var end = i
+                    while end < n, b[end] != lt { end += 1 }
+                    let text = clean(String(decoding: b[i..<min(end, i + 120)], as: UTF8.self))
+                    breaker = "текст «\(text.count > 30 ? String(text.prefix(30)) + "…" : text)»"
+                }
+                i += 1
+                continue
+            }
+            let next = b[i + 1]
+            if next == bang, i + 3 < n, b[i + 2] == UInt8(ascii: "-"), b[i + 3] == UInt8(ascii: "-") {
+                i = (find(Array("-->".utf8), from: i + 4) ?? n) + 3
+                continue
+            }
+            if next == bang || next == question {
+                i = tagEnd(from: i + 2) + 1
+                continue
+            }
+            let isEnd = next == slash
+            let nameStart = i + (isEnd ? 2 : 1)
+            guard nameStart < n, isLetter(b[nameStart]) else {
+                if isEnd { i = tagEnd(from: nameStart) + 1; continue }
+                // «<» не перед буквой — это текст.
+                if headOpen, breaker == nil { breaker = "текст «<»" }
+                i += 1
+                continue
+            }
+            var nameEnd = nameStart
+            while nameEnd < n, !isSpace(b[nameEnd]), b[nameEnd] != slash, b[nameEnd] != gt { nameEnd += 1 }
+            let name = String(decoding: b[nameStart..<nameEnd], as: UTF8.self).lowercased()
+            let end = tagEnd(from: nameEnd)
+            i = end + 1
+            if isEnd {
+                if name == "head" { headOpen = false }
+                continue
+            }
+            switch name {
+            case "head": r.headCount += 1
+            case "body":
+                r.bodyCount += 1
+                headOpen = false
+            case "html": break
+            default:
+                if headOpen {
+                    if !headElements.contains(name) {
+                        if breaker == nil { breaker = "<\(name)>" }
+                    } else if breaker != nil, let tag = seoTag(name, attributes(b[nameEnd..<min(end, n)])) {
+                        if !hidden.contains(tag) { hidden.append(tag) }
+                    }
+                }
+            }
+            if rawTextElements.contains(name) {
+                i = name == "plaintext" ? n : ((find(Array("</\(name)".utf8), from: i)).map { tagEnd(from: $0 + 2) + 1 } ?? n)
+            }
+        }
+        if let breaker, !hidden.isEmpty {
+            r.breaker = breaker
+            r.hidden = hidden
+        }
+        return r
+    }
+
+    /// canonical и meta robots, ради которых важен порядок в `<head>`.
+    static func seoTag(_ name: String, _ attrs: [String: String]) -> String? {
+        switch name {
+        case "link":
+            let rel = (attrs["rel"] ?? "").lowercased().split(whereSeparator: \.isWhitespace)
+            return rel.contains("canonical") ? "canonical" : nil
+        case "meta":
+            let n = (attrs["name"] ?? "").lowercased().trimmingCharacters(in: .whitespaces)
+            return ["robots", "googlebot", "yandex"].contains(n) ? "meta \(n)" : nil
+        default:
+            return nil
+        }
+    }
+
+    /// Атрибуты тега из исходного текста: имя в нижнем регистре, первое вхождение.
+    static func attributes(_ s: ArraySlice<UInt8>) -> [String: String] {
+        var r: [String: String] = [:]
+        let b = Array(s)
+        var i = 0
+        func isSpace(_ c: UInt8) -> Bool { c == 32 || c == 9 || c == 10 || c == 12 || c == 13 }
+        while i < b.count {
+            while i < b.count, isSpace(b[i]) || b[i] == UInt8(ascii: "/") { i += 1 }
+            let ns = i
+            while i < b.count, !isSpace(b[i]), b[i] != UInt8(ascii: "="), b[i] != UInt8(ascii: "/") { i += 1 }
+            guard i > ns else { i += 1; continue }
+            let name = String(decoding: b[ns..<i], as: UTF8.self).lowercased()
+            while i < b.count, isSpace(b[i]) { i += 1 }
+            var value = ""
+            if i < b.count, b[i] == UInt8(ascii: "=") {
+                i += 1
+                while i < b.count, isSpace(b[i]) { i += 1 }
+                if i < b.count, b[i] == UInt8(ascii: "\"") || b[i] == UInt8(ascii: "'") {
+                    let q = b[i]
+                    i += 1
+                    let vs = i
+                    while i < b.count, b[i] != q { i += 1 }
+                    value = String(decoding: b[vs..<min(i, b.count)], as: UTF8.self)
+                    i += 1
+                } else {
+                    let vs = i
+                    while i < b.count, !isSpace(b[i]) { i += 1 }
+                    value = String(decoding: b[vs..<i], as: UTF8.self)
+                }
+            }
+            if r[name] == nil { r[name] = value }
+        }
+        return r
     }
 
     private static func hasAncestor(_ el: Element, named names: Set<String>) -> Bool {

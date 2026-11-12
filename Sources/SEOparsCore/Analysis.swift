@@ -10,6 +10,8 @@ public struct CrawlData: Sendable {
     public var pageIndex: [Int32: Int] = [:]
     public var links: [LinkRecord] = []
     public var sitemapIds: Set<Int32> = []
+    /// Файлы sitemap, где записан URL (№ 104). В обходах старше 2026-11-12 пусто.
+    public var sitemapFiles: [Int32: [String]] = [:]
     public var startId: Int32?
     public var robotsText: String?
 
@@ -22,8 +24,15 @@ public struct CrawlData: Sendable {
         for (i, p) in pages.enumerated() { pageIndex[p.id] = i }
         links = stored.links
         sitemapIds = Set(stored.sitemapIds)
+        addSitemapFiles(stored.sitemapFiles)
         startId = stored.startId
         robotsText = stored.robotsText
+    }
+
+    mutating func addSitemapFiles(_ entries: [SitemapEntry]) {
+        for e in entries where !(sitemapFiles[e.id]?.contains(e.file) ?? false) {
+            sitemapFiles[e.id, default: []].append(e.file)
+        }
     }
 
     public mutating func apply(_ batch: CrawlBatch) {
@@ -44,6 +53,7 @@ public struct CrawlData: Sendable {
         }
         links += batch.links
         sitemapIds.formUnion(batch.sitemapIds)
+        addSitemapFiles(batch.sitemapFiles)
         if let s = batch.startId { startId = s }
         if let r = batch.robotsText { robotsText = r }
     }
@@ -99,9 +109,10 @@ public enum IssueSeverity: Int, Sendable, Comparable, CaseIterable {
 }
 
 public enum IssueGroup: String, Sendable, CaseIterable {
-    case title, description, h1, headings, responses, indexing, hreflang, links, content
+    case title, description, h1, headings, responses, indexing, markup, hreflang, links, content
     public var title: String {
         switch self {
+        case .markup: "Разметка HTML"
         case .hreflang: "Hreflang"
         case .title: "Title"
         case .description: "Description"
@@ -121,8 +132,11 @@ public enum IssueID: String, Sendable, CaseIterable, Hashable {
     case h1Missing, h1Multiple, h1Empty, h1Duplicate, h1EqualsTitle, h1TooLong
     case headingSkippedLevel, headingEmpty, headingBeforeH1, h2Missing, h2TooLong, h2Duplicate
     case client4xx, server5xx, connectionError, redirect3xx, redirectChain, redirectLoop, slowResponse
+    case metaRefresh, nonHTMLContentType
     case noindex, canonicalOther, canonicalToNon200, nonIndexableInSitemap, blockedByRobots, urlVariantDuplicate
     case canonicalMissing, canonicalMultipleSame, canonicalMultipleDifferent, canonicalRelative
+    case notInSitemap, inMultipleSitemaps
+    case headInvalidElement, headBodyMultiple, headBodyMissing
     case brokenInternalLinks, linksToRedirects, internalNofollow, orphanPages, deepPages, fewInlinks
     case nofollowInlinksOnly, nonIndexableInlinksOnly, noInternalOutlinks
     case hreflangNoReturn, hreflangNoSelf, hreflangNoXDefault, hreflangTargetNon200, hreflangInvalidCode
@@ -134,9 +148,12 @@ public enum IssueID: String, Sendable, CaseIterable, Hashable {
         case .descriptionMissing, .descriptionDuplicate, .descriptionTooShort, .descriptionTooLong, .descriptionMultiple: .description
         case .h1Missing, .h1Multiple, .h1Empty, .h1Duplicate, .h1EqualsTitle, .h1TooLong: .h1
         case .headingSkippedLevel, .headingEmpty, .headingBeforeH1, .h2Missing, .h2TooLong, .h2Duplicate: .headings
-        case .client4xx, .server5xx, .connectionError, .redirect3xx, .redirectChain, .redirectLoop, .slowResponse: .responses
+        case .client4xx, .server5xx, .connectionError, .redirect3xx, .redirectChain, .redirectLoop, .slowResponse,
+             .metaRefresh, .nonHTMLContentType: .responses
         case .noindex, .canonicalOther, .canonicalToNon200, .nonIndexableInSitemap, .blockedByRobots, .urlVariantDuplicate,
-             .canonicalMissing, .canonicalMultipleSame, .canonicalMultipleDifferent, .canonicalRelative: .indexing
+             .canonicalMissing, .canonicalMultipleSame, .canonicalMultipleDifferent, .canonicalRelative,
+             .notInSitemap, .inMultipleSitemaps: .indexing
+        case .headInvalidElement, .headBodyMultiple, .headBodyMissing: .markup
         case .brokenInternalLinks, .linksToRedirects, .internalNofollow, .orphanPages, .deepPages, .fewInlinks,
              .nofollowInlinksOnly, .nonIndexableInlinksOnly, .noInternalOutlinks: .links
         case .hreflangNoReturn, .hreflangNoSelf, .hreflangNoXDefault, .hreflangTargetNon200, .hreflangInvalidCode: .hreflang
@@ -147,18 +164,20 @@ public enum IssueID: String, Sendable, CaseIterable, Hashable {
     public var severity: IssueSeverity {
         switch self {
         case .titleMissing, .h1Missing, .client4xx, .server5xx, .connectionError, .redirectLoop,
-             .brokenInternalLinks, .canonicalToNon200, .duplicateContent, .titleDuplicate, .canonicalMultipleDifferent:
+             .brokenInternalLinks, .canonicalToNon200, .duplicateContent, .titleDuplicate, .canonicalMultipleDifferent,
+             .headInvalidElement:
             .error
         case .titleTooLong, .titleTooShort, .titleMultiple, .descriptionMissing, .descriptionDuplicate,
              .descriptionMultiple, .h1Multiple, .h1Empty, .h1Duplicate, .redirectChain, .noindex,
              .nonIndexableInSitemap, .linksToRedirects, .orphanPages, .urlVariantDuplicate, .headingEmpty, .slowResponse,
              .imagesWithoutAlt, .canonicalMultipleSame, .nofollowInlinksOnly, .nonIndexableInlinksOnly,
-             .hreflangNoReturn, .hreflangNoSelf, .hreflangNoXDefault, .hreflangTargetNon200, .hreflangInvalidCode:
+             .hreflangNoReturn, .hreflangNoSelf, .hreflangNoXDefault, .hreflangTargetNon200, .hreflangInvalidCode,
+             .metaRefresh, .nonHTMLContentType, .headBodyMultiple, .headBodyMissing:
             .warning
         case .descriptionTooShort, .descriptionTooLong, .h1EqualsTitle, .headingSkippedLevel, .headingBeforeH1,
              .redirect3xx, .canonicalOther, .blockedByRobots, .internalNofollow, .deepPages, .fewInlinks,
              .lowWordCount, .imagesEmptyAlt, .imagesLongAlt, .h1TooLong, .h2Missing, .h2TooLong, .h2Duplicate,
-             .canonicalMissing, .canonicalRelative, .noInternalOutlinks:
+             .canonicalMissing, .canonicalRelative, .noInternalOutlinks, .notInSitemap, .inMultipleSitemaps:
             .notice
         }
     }
@@ -194,6 +213,13 @@ public enum IssueID: String, Sendable, CaseIterable, Hashable {
         case .redirectChain: "Цепочка из 2+ редиректов"
         case .redirectLoop: "Петля редиректов"
         case .slowResponse: "Ответ дольше \(t.slowResponseMs) мс"
+        case .metaRefresh: "Meta refresh: переход или перезагрузка без кода 3xx"
+        case .nonHTMLContentType: "HTML отдаётся без Content-Type text/html"
+        case .notInSitemap: "Индексируемая страница не в sitemap"
+        case .inMultipleSitemaps: "URL в нескольких файлах sitemap"
+        case .headInvalidElement: "Недопустимый элемент в <head> раньше canonical или meta robots"
+        case .headBodyMultiple: "Несколько <head> или <body>"
+        case .headBodyMissing: "Нет <head> или <body>"
         case .noindex: "noindex"
         case .canonicalOther: "Canonical указывает на другой URL"
         case .canonicalToNon200: "Canonical ведёт на страницу не с кодом 200"
@@ -223,6 +249,144 @@ public enum IssueID: String, Sendable, CaseIterable, Hashable {
         case .imagesWithoutAlt: "Картинки без атрибута alt"
         case .imagesEmptyAlt: "Картинки с пустым alt"
         case .imagesLongAlt: "Alt длиннее \(t.altMax) символов"
+        }
+    }
+
+    /// Что сделать с проблемой (№ 117): для вкладки «Проблемы» и колонки в `issues.csv`. Тексты свои, не из Screaming Frog.
+    /// Без `default`: новая проверка не соберётся без своего текста.
+    public func howToFix(_ t: Thresholds) -> String {
+        let guide = "Порог — рабочий ориентир SEOpars, а не норма Яндекса или Google, меняется в «Порогах»."
+        switch self {
+        case .titleMissing:
+            return "Пропишите title: о чём страница и чем она отличается от соседних. В CMS это обычно поле «SEO-заголовок» или шаблон title для раздела."
+        case .titleDuplicate:
+            return "Сделайте title каждой страницы своим: добавьте отличие — товар, раздел, город, номер страницы. Если страницы на самом деле одинаковые, оставьте одну, а остальные склейте редиректом 301 или canonical."
+        case .titleTooShort:
+            return "Допишите title: что на странице, для кого, где. " + guide
+        case .titleTooLong:
+            return "Сократите title: главное — в начало, название сайта и служебные хвосты — в конец или убрать. " + guide
+        case .titleMultiple:
+            return "Оставьте один <title>. Второй обычно выводит тема или второй SEO-плагин: найдите, кто добавляет лишний, и отключите вывод."
+        case .descriptionMissing:
+            return "Добавьте meta description: одно-два предложения о содержании страницы. Без него поисковик соберёт сниппет из текста страницы сам."
+        case .descriptionDuplicate:
+            return "Напишите description под каждую страницу или задайте шаблон с переменными: название товара, раздел, цена."
+        case .descriptionTooShort:
+            return "Расширьте description: о чём страница и чем она полезна. " + guide
+        case .descriptionTooLong:
+            return "Сократите description, важное — в первую фразу. " + guide
+        case .descriptionMultiple:
+            return "Оставьте один meta description. Лишний обычно выводит тема или второй SEO-плагин."
+        case .h1Missing:
+            return "Добавьте один заголовок H1 с темой страницы. Часто название страницы оформлено крупным шрифтом в <div> или <p> вместо <h1>."
+        case .h1Multiple:
+            return "Оставьте один H1, остальные заголовки сделайте H2. Обычно лишний H1 — логотип или заголовки блоков в шаблоне."
+        case .h1Empty:
+            return "Впишите в H1 текст или удалите пустой тег. Если в H1 только картинка, добавьте рядом текст."
+        case .h1Duplicate:
+            return "Сделайте H1 разным на разных страницах: уточните товар, раздел, город. Если страницы на самом деле одинаковые, склейте их редиректом 301 или canonical."
+        case .h1EqualsTitle:
+            return "Это не ошибка. При желании сделайте title полнее (с уточнением или городом), а H1 — короче и проще для читателя."
+        case .h1TooLong:
+            return "Сократите H1 до сути, подробности перенесите в подзаголовок или первый абзац. " + guide
+        case .headingSkippedLevel:
+            return "Поставьте уровни по порядку: после H2 — H3, а не H4. Если тег выбран ради размера шрифта, задайте размер в CSS."
+        case .headingEmpty:
+            return "Удалите пустые теги H2–H6 или впишите в них текст. Их часто оставляют пустые блоки конструктора."
+        case .headingBeforeH1:
+            return "Сделайте H1 первым заголовком страницы. Подписи в шапке, меню и боковой колонке разметьте обычными элементами со стилями, а не H2–H6."
+        case .h2Missing:
+            return "Разбейте длинный текст подзаголовками H2. На короткой служебной странице (контакты, корзина) можно ничего не менять."
+        case .h2TooLong:
+            return "Сократите H2 до короткой подписи раздела. " + guide
+        case .h2Duplicate:
+            return "Одинаковый первый H2 — обычно заголовок шаблонного блока («Похожие товары», «Отзывы»). Поставьте выше него H2 по теме страницы или разметьте заголовок блока без H2."
+        case .client4xx:
+            return "Если страница нужна — верните её. Если удалена навсегда — поставьте редирект 301 на близкую по смыслу страницу или оставьте 404 и уберите ссылки на неё (вкладка «Входящие» инспектора)."
+        case .server5xx:
+            return "Причину ищите в логах сервера или CMS. Если ошибка то появляется, то нет, перепроверьте адрес позже и уменьшите число потоков обхода."
+        case .connectionError:
+            return "Проверьте, открывается ли адрес в браузере. Тайм-аут и обрыв бывают от защиты от ботов или перегрузки сервера: уменьшите потоки, увеличьте задержку и тайм-аут в настройках обхода."
+        case .redirect3xx:
+            return "Это не ошибка. Проверьте, что редирект нужен и ведёт куда надо, а внутренние ссылки на этот адрес замените конечным адресом."
+        case .redirectChain:
+            return "Настройте редирект сразу на конечный адрес, без промежуточных шагов (весь путь — во вкладке «Редиректы»), и замените внутренние ссылки конечным адресом."
+        case .redirectLoop:
+            return "Разорвите петлю: один из адресов должен отдавать 200. Обычно петлю создают два противоречащих правила, например про слэш на конце в настройках сервера и в CMS."
+        case .slowResponse:
+            return "Сначала перепроверьте страницу отдельно: ответ мог замедлиться от нагрузки самого обхода. Если подтверждается — смотрите кэширование страниц, медленные запросы к базе, тяжёлые плагины. " + guide
+        case .metaRefresh:
+            return "Если страница переехала, замените meta refresh редиректом 301 на сервере. Если страница перезагружает саму себя ради свежих данных, обновляйте их скриптом без перезагрузки."
+        case .nonHTMLContentType:
+            return "Настройте сервер или CMS, чтобы HTML отдавался с заголовком «Content-Type: text/html; charset=utf-8» (или с вашей кодировкой). С text/plain браузер показывает код страницы как текст."
+        case .noindex:
+            return "Если страница должна быть в поиске, уберите noindex из meta robots или заголовка X-Robots-Tag. Если она закрыта специально, достаточно убрать её из sitemap."
+        case .canonicalOther:
+            return "Для дублей (фильтры, сортировки, версии для печати) это нормально. Если страница самостоятельная и должна быть в поиске, поставьте canonical на неё саму."
+        case .canonicalToNon200:
+            return "Укажите в canonical адрес, который отдаёт 200: не редирект, не ошибку и не адрес, закрытый в robots.txt."
+        case .nonIndexableInSitemap:
+            return "Уберите из sitemap адреса с noindex, редиректами, ошибками и canonical на другую страницу: в sitemap — только страницы для индекса. Обычно это настройка генератора sitemap в CMS."
+        case .blockedByRobots:
+            return "Если адрес должен индексироваться, уберите или уточните правило robots.txt (сработавшее — в колонке «Правило robots.txt»). Если закрыт специально, ничего делать не нужно."
+        case .urlVariantDuplicate:
+            return "Выберите один вариант адреса (со слэшем на конце или без, в нижнем регистре), настройте на него редирект 301 с остальных и ставьте ссылки только на него."
+        case .canonicalMissing:
+            return "Добавьте <link rel=\"canonical\"> с полным адресом самой страницы. В большинстве SEO-плагинов CMS это одна настройка."
+        case .canonicalMultipleSame:
+            return "Оставьте один canonical. Повтор обычно появляется, когда его выводят и тема, и SEO-плагин."
+        case .canonicalMultipleDifferent:
+            return "Оставьте один canonical с нужным адресом и найдите, откуда берётся второй: тема, плагин или заголовок Link от сервера."
+        case .canonicalRelative:
+            return "Укажите в canonical полный адрес со схемой и доменом, например https://example.ru/page/."
+        case .notInSitemap:
+            return "Добавьте страницу в sitemap. Если она не должна быть в поиске (служебная страница, дубль), закройте её noindex или поставьте canonical на основную."
+        case .inMultipleSitemaps:
+            return "Оставьте адрес в одном файле sitemap. Повтор обычно значит, что sitemap собирают два генератора или разделы пересекаются."
+        case .headInvalidElement:
+            return "Перенесите в <body> элемент, на котором оборвался <head> (он показан в инспекторе), или поставьте canonical и meta robots выше него. В <head> допустимы только title, meta, link, script, style, base, noscript и template."
+        case .headBodyMultiple:
+            return "Оставьте по одному <head> и <body>. Лишний тег обычно приходит из шаблона или вставки — виджета, кода счётчика, куска другой HTML-страницы."
+        case .headBodyMissing:
+            return "Добавьте явные <head> и <body>. HTML разрешает их опускать, но без них легко не заметить, как canonical и meta robots оказались в <body>."
+        case .brokenInternalLinks:
+            return "Замените или удалите ссылки на адреса с ошибкой. Список — вкладка «Исходящие» инспектора или «Ссылки» с фильтром «Битые»."
+        case .linksToRedirects:
+            return "Замените в ссылках адрес на конечный адрес редиректа. Список — «Ссылки» → «На редирект»."
+        case .internalNofollow:
+            return "Уберите rel=\"nofollow\" у ссылок на страницы, которые должны быть в поиске. Страницу, которая в поиске не нужна, закройте noindex, а не ссылку на неё."
+        case .orphanPages:
+            return "Поставьте на страницу ссылки из меню, раздела или похожих страниц. Если страница устарела, уберите её из sitemap."
+        case .deepPages:
+            return "Сократите путь от главной: ссылки из меню и разделов, блоки «Популярное», пагинация с номерами страниц. " + guide
+        case .fewInlinks:
+            return "Добавьте ссылки на страницу из близких по теме разделов и материалов. " + guide
+        case .nofollowInlinksOnly:
+            return "Уберите nofollow хотя бы у части ссылок на эту страницу или поставьте на неё обычную ссылку из меню или раздела."
+        case .nonIndexableInlinksOnly:
+            return "Поставьте на страницу ссылку с индексируемой страницы: из меню, раздела или похожего материала."
+        case .noInternalOutlinks:
+            return "Добавьте ссылки на связанные страницы: раздел, похожие товары, следующий шаг. Если ссылки строит JavaScript, проверьте, что они есть в исходном HTML."
+        case .hreflangNoReturn:
+            return "Добавьте на страницу-перевод hreflang обратно на эту страницу: каждая языковая версия перечисляет все версии, включая себя."
+        case .hreflangNoSelf:
+            return "Добавьте в набор hreflang ссылку страницы на саму себя с её кодом языка."
+        case .hreflangNoXDefault:
+            return "Добавьте hreflang=\"x-default\" на версию для остальных языков — обычно главную или страницу выбора языка."
+        case .hreflangTargetNon200:
+            return "Укажите в hreflang адреса, которые отдают 200: без редиректов и ошибок."
+        case .hreflangInvalidCode:
+            return "Исправьте код: язык по ISO 639-1 и при необходимости регион по ISO 3166-1 через дефис — ru, en-GB, а не ru-RUS или en-UK."
+        case .duplicateContent:
+            return "Оставьте одну страницу, остальные склейте редиректом 301 или canonical. Если страницы должны быть разными, сделайте разным их текст."
+        case .lowWordCount:
+            return "Если страница должна приводить посетителей из поиска, добавьте полезный текст. На контактах, корзине и подобных страницах можно ничего не менять. В счёт идут и меню, и подвал. " + guide
+        case .imagesWithoutAlt:
+            return "Добавьте атрибут alt: у содержательной картинки — короткое описание, у декоративной — пустой alt=\"\"."
+        case .imagesEmptyAlt:
+            return "Проверьте, что пустой alt стоит только у декоративных картинок. Товару, схеме, фото нужен текст."
+        case .imagesLongAlt:
+            return "Сократите alt до короткого описания картинки, без перечня ключевых слов. " + guide
         }
     }
 
@@ -419,6 +583,7 @@ public enum CrawlAnalyzer {
                     }
                 }
                 if p.responseTimeMs > t.slowResponseMs { add(.slowResponse) }
+                if p.statusCode == 200, p.sniffedHTML == true { add(.nonHTMLContentType) }
             }
 
             switch m.indexability {
@@ -430,8 +595,18 @@ public enum CrawlAnalyzer {
                 add(.canonicalToNon200)
             }
             if data.sitemapIds.contains(p.id), !m.indexability.isIndexable { add(.nonIndexableInSitemap) }
+            if (data.sitemapFiles[p.id]?.count ?? 0) > 1 { add(.inMultipleSitemaps) }
 
             if p.isContentPage, let h = p.html {
+                // Значение, которое браузер не примет (`content=""`, `url=/x` без времени), ничего не делает.
+                if let raw = h.metaRefresh, HTMLAnalyzer.parseMetaRefresh(raw) != nil { add(.metaRefresh) }
+                // Только если sitemap загрузился: без него «не в sitemap» была бы каждая страница.
+                if !data.sitemapIds.isEmpty, m.indexability.isIndexable, !data.sitemapIds.contains(p.id) { add(.notInSitemap) }
+                // № 112. В обходах старше 2026-11-12 счётчиков нет (nil) — проверки молчат.
+                if h.headBreaker != nil { add(.headInvalidElement) }
+                if (h.headCount ?? 0) > 1 || (h.bodyCount ?? 0) > 1 { add(.headBodyMultiple) }
+                if h.headCount == 0 || h.bodyCount == 0 { add(.headBodyMissing) }
+
                 let title = h.title ?? ""
                 if title.isEmpty { add(.titleMissing) }
                 else {

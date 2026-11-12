@@ -273,17 +273,24 @@ struct IssueDetail: View {
                     Spacer()
                     Button {
                         let details = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, detailValue(issue, $0)) })
+                        let fix = issue.howToFix(session.data.config.thresholds)
                         let cols: [CSVColumn<PageRow>] = [
                             .init("URL") { $0.url },
                             .init("Код") { $0.statusText },
                             .init(detailTitle(issue)) { details[$0.id] ?? "" },
                             .init("Уникальные входящие") { String($0.uniqueInlinks) },
                             .init("Глубина") { $0.depthText },
+                            .init("Как исправить") { _ in fix },
                         ]
                         Export.save(CSVWriter.make(rows, columns: cols, delimiter: Export.delimiter), name: "issue-\(issue.rawValue).csv")
                     } label: { Label("CSV", systemImage: "square.and.arrow.down") }
                 }
-                Text(IssueHelp.text(issue)).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                let help = IssueHelp.text(issue)
+                if !help.isEmpty {
+                    Text(help).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                (Text("Как исправить: ").bold() + Text(issue.howToFix(session.data.config.thresholds)))
+                    .font(.callout).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                 Table(rows, selection: $selection, sortOrder: $sortOrder) {
                     TableColumn("URL", value: \PageRow.url) { Text($0.url).help($0.url) }.width(min: 200, ideal: 340)
                     TableColumn("Код", value: \PageRow.status) { r in StatusText(row: r) }.width(min: 40, ideal: 50)
@@ -304,12 +311,19 @@ struct IssueDetail: View {
     }
 
     func detailTitle(_ i: IssueID) -> String {
-        switch i.group {
+        switch i {
+        case .metaRefresh: return "Meta refresh"
+        case .nonHTMLContentType: return "Content-Type"
+        case .inMultipleSitemaps: return "Файлы sitemap"
+        default: break
+        }
+        return switch i.group {
         case .title: "Title"
         case .description: "Description"
         case .h1, .headings: [.h2Missing, .h2TooLong, .h2Duplicate].contains(i) ? "H2" : "H1"
         case .responses: "Ответ"
         case .indexing: "Индексируемость"
+        case .markup: "Разметка"
         case .hreflang: "hreflang"
         case .links: "Ссылки"
         case .content: "Title"
@@ -327,9 +341,16 @@ struct IssueDetail: View {
             case .h2Missing: return "H2: \(r.h2Count)"
             default: return r.headingIssues.isEmpty ? r.h1 : "\(r.h1) · \(r.headingIssues)"
             }
-        case .responses: return r.redirectTarget.isEmpty ? "\(r.statusText), \(r.responseMs) мс" : "→ \(r.redirectTarget)"
+        case .responses:
+            switch i {
+            case .metaRefresh: return session.page(r.id)?.html?.metaRefreshSummary ?? ""
+            case .nonHTMLContentType: return session.page(r.id)?.headers["content-type"] ?? "заголовка нет"
+            default: return r.redirectTarget.isEmpty ? "\(r.statusText), \(r.responseMs) мс" : "→ \(r.redirectTarget)"
+            }
+        case .markup: return session.page(r.id)?.html?.headMarkupSummary ?? ""
         case .indexing:
             switch i {
+            case .inMultipleSitemaps: return (session.data.sitemapFiles[r.id] ?? []).map(URLNormalizer.display).joined(separator: " | ")
             case .canonicalMultipleSame, .canonicalMultipleDifferent:
                 let targets = session.analysis.metrics[r.id]?.canonicalTargets ?? []
                 return targets.map { session.displayURL($0) }.joined(separator: " | ")
@@ -421,6 +442,18 @@ enum IssueHelp {
             "Проверяются цели hreflang, загруженные в этом обходе. Обходы до 2026-11-11 связей hreflang не хранят — нужен повторный обход."
         case .hreflangInvalidCode:
             "Язык — ISO 639-1, регион — ISO 3166-1 alpha-2 через дефис: en-GB, а не en-UK; ru, а не ru-RUS."
+        case .metaRefresh:
+            "Учитывается <meta http-equiv=\"refresh\"> на HTML-странице с кодом 200. Адрес перехода — в колонке и в инспекторе. По meta refresh обходчик не переходит: страница, на которую ведёт только он, в обход не попадёт."
+        case .nonHTMLContentType:
+            "Ответ начинается как HTML-документ, а заголовок Content-Type — text/plain или его нет. Страницу с text/plain SEOpars не разбирает, как не разбирает её браузер; без заголовка — разбирает."
+        case .notInSitemap:
+            "Индексируемые HTML-страницы с кодом 200, которых нет ни в одном загруженном файле sitemap. Если sitemap не загрузился или выключен в настройках, проверка молчит."
+        case .inMultipleSitemaps:
+            "Адрес записан в двух и более файлах sitemap, файлы — в колонке и в инспекторе. Файлы по адресам записываются с 2026-11-12, в более старых обходах проверка молчит."
+        case .headInvalidElement:
+            "Читается исходный HTML до исправления разметки. Голова страницы — от начала до </head> или <body>. По Google Search Central, на первом недопустимом элементе Google считает <head> законченным и дальше его не читает (проверено 2026-11-12). Содержимое <noscript> не проверяется: при включённом JavaScript браузер читает его как текст."
+        case .headBodyMultiple, .headBodyMissing:
+            "Теги считаются в исходном HTML без комментариев и содержимого script, style, template, noscript. Обходы старше 2026-11-12 этих данных не хранят — нужен повторный обход."
         default:
             ""
         }

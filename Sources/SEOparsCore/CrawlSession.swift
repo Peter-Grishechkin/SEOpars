@@ -127,7 +127,7 @@ public final class CrawlSession {
             state = batch.state
         }
         if !batch.messages.isEmpty { messages += batch.messages }
-        if !batch.pages.isEmpty || !batch.links.isEmpty || !state.isActive || !batch.sitemapIds.isEmpty {
+        if !batch.pages.isEmpty || !batch.links.isEmpty || !state.isActive || !batch.sitemapIds.isEmpty || !batch.sitemapFiles.isEmpty {
             scheduleAnalysis()
         }
     }

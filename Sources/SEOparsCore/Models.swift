@@ -321,7 +321,17 @@ public struct HTMLInfo: Codable, Sendable, Equatable {
     public var ogDescription: String?
     public var ogImage: String?
     public var twitterCard: String?
+    /// Значение `content` у `<meta http-equiv="refresh">` как в коде.
     public var metaRefresh: String?
+    /// Адрес перехода из meta refresh после нормализации (№ 103). Нет — перезагрузка той же страницы или старый обход.
+    public var metaRefreshURL: String?
+    /// Сколько тегов `<head>` и `<body>` в исходном коде (№ 112). `nil` — обход старше 2026-11-12, не считалось.
+    public var headCount: Int?
+    public var bodyCount: Int?
+    /// Первый недопустимый в `<head>` элемент, после которого стоят canonical или meta robots: «<img>», «текст «…»» (№ 112).
+    public var headBreaker: String?
+    /// Какие теги стоят после него: «canonical», «meta robots».
+    public var headHiddenTags: [String] = []
     public var headings: [Heading] = []
     public var wordCount = 0
     public var contentHash = ""
@@ -358,6 +368,11 @@ public struct HTMLInfo: Codable, Sendable, Equatable {
         ogImage = try c.decodeIfPresent(String.self, forKey: .ogImage)
         twitterCard = try c.decodeIfPresent(String.self, forKey: .twitterCard)
         metaRefresh = try c.decodeIfPresent(String.self, forKey: .metaRefresh)
+        metaRefreshURL = try c.decodeIfPresent(String.self, forKey: .metaRefreshURL)
+        headCount = try c.decodeIfPresent(Int.self, forKey: .headCount)
+        bodyCount = try c.decodeIfPresent(Int.self, forKey: .bodyCount)
+        headBreaker = try c.decodeIfPresent(String.self, forKey: .headBreaker)
+        headHiddenTags = try c.decodeIfPresent([String].self, forKey: .headHiddenTags) ?? []
         headings = try c.decodeIfPresent([Heading].self, forKey: .headings) ?? []
         wordCount = try c.decodeIfPresent(Int.self, forKey: .wordCount) ?? 0
         contentHash = try c.decodeIfPresent(String.self, forKey: .contentHash) ?? ""
@@ -372,6 +387,23 @@ public struct HTMLInfo: Codable, Sendable, Equatable {
 
     /// Сколько картинок с alt длиннее порога.
     public func longAltCount(max: Int) -> Int { altLengths.filter { $0 > max }.count }
+
+    /// «переход на https://e.ru/about/ через 0 с» или «перезагрузка этой же страницы через 30 с» (№ 103).
+    public var metaRefreshSummary: String? {
+        guard let raw = metaRefresh else { return nil }
+        guard let p = HTMLAnalyzer.parseMetaRefresh(raw) else { return "значение не разобрано: \(raw)" }
+        let delay = "через \(Int(p.delay)) с"
+        if let url = metaRefreshURL.map(URLNormalizer.display) ?? p.url { return "переход на \(url) \(delay)" }
+        return "перезагрузка этой же страницы \(delay)"
+    }
+
+    /// Ошибки разметки `<head>` и `<body>` одной строкой (№ 112). `nil` — ошибок нет или обход старый.
+    public var headMarkupSummary: String? {
+        var parts: [String] = []
+        if let b = headBreaker { parts.append("<head> обрывается на \(b), после него: \(headHiddenTags.joined(separator: ", "))") }
+        if let h = headCount, let b = bodyCount, h != 1 || b != 1 { parts.append("<head>: \(h), <body>: \(b)") }
+        return parts.isEmpty ? nil : parts.joined(separator: "; ")
+    }
 
     public var title: String? { titles.first }
     public var description: String? { descriptions.first }
@@ -402,6 +434,9 @@ public struct PageRecord: Codable, Sendable, Identifiable, Equatable {
     public var sizeBytes: Int = 0
     public var truncated = false
     public var headers: [String: String] = [:]
+    /// Тело похоже на HTML, а заголовка Content-Type с html нет: `text/plain` или заголовка нет вовсе (№ 103).
+    /// Optional, чтобы записи старых обходов без этого ключа читались.
+    public var sniffedHTML: Bool?
     public var html: HTMLInfo?
     /// Глубина обнаружения при обходе (-1 — пришла из sitemap или списка).
     public var discoveryDepth: Int = 0
@@ -473,12 +508,20 @@ public struct URLEntry: Sendable, Equatable {
     public var url: String
 }
 
+/// URL и файл sitemap, где он записан (№ 104). Адрес файла — как его запросил обходчик.
+public struct SitemapEntry: Sendable, Equatable, Hashable {
+    public var id: Int32
+    public var file: String
+    public init(id: Int32, file: String) { self.id = id; self.file = file }
+}
+
 /// Пачка изменений от обходчика к интерфейсу.
 public struct CrawlBatch: Sendable {
     public var newURLs: [URLEntry] = []
     public var pages: [PageRecord] = []
     public var links: [LinkRecord] = []
     public var sitemapIds: [Int32] = []
+    public var sitemapFiles: [SitemapEntry] = []
     public var stats = CrawlStats()
     public var state: CrawlState = .idle
     public var messages: [String] = []
@@ -487,6 +530,6 @@ public struct CrawlBatch: Sendable {
     public init() {}
 
     public var isEmpty: Bool {
-        newURLs.isEmpty && pages.isEmpty && links.isEmpty && sitemapIds.isEmpty && messages.isEmpty && robotsText == nil
+        newURLs.isEmpty && pages.isEmpty && links.isEmpty && sitemapIds.isEmpty && sitemapFiles.isEmpty && messages.isEmpty && robotsText == nil
     }
 }
