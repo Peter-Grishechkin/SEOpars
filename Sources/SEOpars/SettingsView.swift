@@ -83,15 +83,16 @@ struct ZoneRulesSection: View {
 
     var body: some View {
         Section("Зоны ссылок: свои правила раньше эвристики") {
-            ForEach($rules) { $rule in
+            ForEach(rules) { rule in
+                let bound = binding(for: rule.id)
                 HStack {
-                    Picker("Зона", selection: $rule.zone) {
+                    Picker("Зона", selection: bound.zone) {
                         ForEach(ZoneRule.assignableZones, id: \.self) { Text($0.title).tag($0) }
                     }
                     .labelsHidden()
                     .frame(width: 150)
                     Text("←").foregroundStyle(.secondary).accessibilityHidden(true)
-                    TextField("CSS-селектор предка", text: $rule.selector, prompt: Text(".elementor-location-header"))
+                    TextField("CSS-селектор предка", text: bound.selector, prompt: Text(".elementor-location-header"))
                         .font(.system(.callout, design: .monospaced))
                         .accessibilityLabel("CSS-селектор для зоны «\(rule.zone.title)»")
                     Button { rules.removeAll { $0.id == rule.id } } label: { Image(systemName: "minus.circle") }
@@ -130,6 +131,19 @@ struct ZoneRulesSection: View {
                 }
             }
         }
+    }
+
+    /// Привязка к правилу по id, а не по индексу, как у `ForEach($rules)`. Поле ввода удалённого правила,
+    /// если в нём был фокус, ещё раз читает свою привязку, а индекс уже за концом массива: приложение
+    /// падало на `Array._checkSubscript` (2026-11-12). Здесь такое поле читает пустое правило, запись теряется.
+    private func binding(for id: UUID) -> Binding<ZoneRule> {
+        Binding(
+            get: { rules.first { $0.id == id } ?? ZoneRule(zone: .header, selector: "") },
+            set: { new in
+                guard let i = rules.firstIndex(where: { $0.id == id }) else { return }
+                rules[i] = new
+            }
+        )
     }
 
     /// Ссылки из вставленного HTML: зона по правилам и зона по одной эвристике.
