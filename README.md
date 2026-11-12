@@ -7,7 +7,7 @@
 [![macOS 15+](https://img.shields.io/badge/macOS-15%2B-000000?logo=apple&logoColor=white)](#установка)
 [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](Package.swift)
 [![SwiftUI](https://img.shields.io/badge/UI-SwiftUI-0A84FF?logo=swift&logoColor=white)](Sources/SEOpars)
-[![Версия 0.2.0](https://img.shields.io/badge/version-0.2.0-2ea44f)](https://github.com/Peter-Grishechkin/SEOpars/releases/latest)
+[![Версия 0.3.0](https://img.shields.io/badge/version-0.3.0-2ea44f)](https://github.com/Peter-Grishechkin/SEOpars/releases/latest)
 [![Лицензия PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](LICENSE.md)
 [![Telegram: Разум Петра](https://img.shields.io/badge/Telegram-%D0%A0%D0%B0%D0%B7%D1%83%D0%BC%20%D0%9F%D0%B5%D1%82%D1%80%D0%B0-26A5E4?logo=telegram&logoColor=white)](https://t.me/seo_and_sem)
 
@@ -117,7 +117,7 @@ build/seopars-cli crawl https://example.ru/ --max 500 --csv ./выгрузка
 
 Обходы хранятся в `~/Library/Application Support/SEOpars/Crawls/`, один файл `.seocrawl` (SQLite) на обход. В файле: страницы, ссылки, очередь, robots.txt и сжатый HTML для вкладки «Код». Обход, поставленный на паузу или прерванный, продолжается с того же места.
 
-## Ограничения версии 0.2
+## Ограничения версии 0.3
 
 - JavaScript не выполняется: сайт читается как исходный HTML.
 - Не видно, скрыт ли заголовок или текст стилями.

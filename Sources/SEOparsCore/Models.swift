@@ -114,7 +114,7 @@ public enum UserAgentPreset: String, Codable, Sendable, CaseIterable {
     public var userAgent: String {
         switch self {
         case .seopars, .custom:
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) SEOpars/0.2"
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) SEOpars/0.3"
         case .googlebot:
             "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
         case .yandexbot:
