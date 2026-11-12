@@ -4,10 +4,10 @@
 
 **SEO-парсер сайта для macOS.** Обходит сайт, собирает title, description, заголовки и внутренние ссылки, находит проблемы и выгружает всё в CSV. Таблицы наполняются прямо во время обхода.
 
-[![macOS 15+](https://img.shields.io/badge/macOS-15%2B-000000?logo=apple&logoColor=white)](#сборка-и-запуск)
+[![macOS 15+](https://img.shields.io/badge/macOS-15%2B-000000?logo=apple&logoColor=white)](#установка)
 [![Swift 6](https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white)](Package.swift)
 [![SwiftUI](https://img.shields.io/badge/UI-SwiftUI-0A84FF?logo=swift&logoColor=white)](Sources/SEOpars)
-[![Версия 0.1.0](https://img.shields.io/badge/version-0.1.0-2ea44f)](CHANGES-LOG.md)
+[![Версия 0.2.0](https://img.shields.io/badge/version-0.2.0-2ea44f)](https://github.com/Peter-Grishechkin/SEOpars/releases/latest)
 [![Лицензия PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial-orange)](LICENSE.md)
 [![Telegram: Разум Петра](https://img.shields.io/badge/Telegram-%D0%A0%D0%B0%D0%B7%D1%83%D0%BC%20%D0%9F%D0%B5%D1%82%D1%80%D0%B0-26A5E4?logo=telegram&logoColor=white)](https://t.me/seo_and_sem)
 
@@ -71,9 +71,23 @@
 
 Светлая или тёмная версия картинок подбирается по теме GitHub.
 
-## Сборка и запуск
+## Установка
 
-Нужны macOS 15 или новее и Command Line Tools с Swift 6. Xcode не нужен. Готовых сборок пока нет, приложение собирается из исходников.
+Нужны Mac на Apple silicon и macOS 15 или новее.
+
+1. Скачайте `SEOpars-<версия>-macos-arm64.zip` со страницы [последнего релиза](https://github.com/Peter-Grishechkin/SEOpars/releases/latest) и распакуйте. В архиве `SEOpars.app`, командная строка `seopars-cli` и текст лицензии.
+2. Перетащите `SEOpars.app` в «Программы».
+3. Приложение подписано ad-hoc и не заверено Apple, поэтому при первом запуске macOS откажется его открыть. После этого откройте «Системные настройки» → «Конфиденциальность и безопасность»: там появится строка «Файл „SEOpars“ заблокирован для защиты Вашего Mac» и кнопка «Все равно открыть». Если кнопки нет или macOS пишет, что приложение повреждено, снимите карантин в Терминале:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/SEOpars.app
+```
+
+С `seopars-cli` из архива карантин снимается так же: `xattr -d com.apple.quarantine seopars-cli`.
+
+## Сборка из исходников
+
+Нужны macOS 15 или новее и Command Line Tools с Swift 6. Xcode не нужен.
 
 ```bash
 ./scripts/build-app.sh
@@ -103,7 +117,7 @@ build/seopars-cli crawl https://example.ru/ --max 500 --csv ./выгрузка
 
 Обходы хранятся в `~/Library/Application Support/SEOpars/Crawls/`, один файл `.seocrawl` (SQLite) на обход. В файле: страницы, ссылки, очередь, robots.txt и сжатый HTML для вкладки «Код». Обход, поставленный на паузу или прерванный, продолжается с того же места.
 
-## Ограничения версии 0.1
+## Ограничения версии 0.2
 
 - JavaScript не выполняется: сайт читается как исходный HTML.
 - Не видно, скрыт ли заголовок или текст стилями.

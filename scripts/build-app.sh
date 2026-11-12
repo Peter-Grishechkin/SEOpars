@@ -13,7 +13,7 @@ cp "$BIN/SEOpars" "$APP/Contents/MacOS/SEOpars"
 cp "$BIN/seopars-cli" build/seopars-cli
 # Ресурсы зависимостей (если появятся)
 for b in "$BIN"/*.bundle(N); do cp -R "$b" "$APP/Contents/Resources/"; done
-VERSION="0.1.0"
+VERSION="0.2.0"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
