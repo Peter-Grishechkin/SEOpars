@@ -80,6 +80,7 @@ extension CrawlConfig {
 struct ZoneRulesSection: View {
     @Binding var rules: [ZoneRule]
     @State private var sample = ""
+    @State private var showPreview = false
 
     var body: some View {
         Section("Зоны ссылок: свои правила раньше эвристики") {
@@ -107,7 +108,9 @@ struct ZoneRulesSection: View {
             Button("Добавить правило") { rules.append(ZoneRule(zone: .header, selector: "")) }
             Text("Ссылка внутри элемента, подходящего под селектор, получает зону правила. Срабатывает ближайший подходящий предок, при равенстве — правило выше. Правила применяются во время обхода: в готовом обходе зоны не пересчитываются.")
                 .font(.caption).foregroundStyle(.secondary)
-            DisclosureGroup("Проверить на вставленном HTML") {
+            // В Form у треугольника DisclosureGroup нет действий «Универсального доступа»: блок не раскрывали
+            // ни VoiceOver, ни AXPress (2026-11-12). Действие на подписи добавляет треугольнику AXPress.
+            DisclosureGroup(isExpanded: $showPreview) {
                 TextEditor(text: $sample)
                     .font(.system(.callout, design: .monospaced))
                     .frame(height: 90)
@@ -129,6 +132,9 @@ struct ZoneRulesSection: View {
                     .font(.callout)
                     .accessibilityElement(children: .combine)
                 }
+            } label: {
+                Text("Проверить на вставленном HTML")
+                    .accessibilityAction { showPreview.toggle() }
             }
         }
     }
