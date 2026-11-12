@@ -124,6 +124,7 @@ public enum IssueID: String, Sendable, CaseIterable, Hashable {
     case noindex, canonicalOther, canonicalToNon200, nonIndexableInSitemap, blockedByRobots, urlVariantDuplicate
     case canonicalMissing, canonicalMultipleSame, canonicalMultipleDifferent, canonicalRelative
     case brokenInternalLinks, linksToRedirects, internalNofollow, orphanPages, deepPages, fewInlinks
+    case nofollowInlinksOnly, nonIndexableInlinksOnly, noInternalOutlinks
     case hreflangNoReturn, hreflangNoSelf, hreflangNoXDefault, hreflangTargetNon200, hreflangInvalidCode
     case duplicateContent, lowWordCount, imagesWithoutAlt, imagesEmptyAlt, imagesLongAlt
 
@@ -136,7 +137,8 @@ public enum IssueID: String, Sendable, CaseIterable, Hashable {
         case .client4xx, .server5xx, .connectionError, .redirect3xx, .redirectChain, .redirectLoop, .slowResponse: .responses
         case .noindex, .canonicalOther, .canonicalToNon200, .nonIndexableInSitemap, .blockedByRobots, .urlVariantDuplicate,
              .canonicalMissing, .canonicalMultipleSame, .canonicalMultipleDifferent, .canonicalRelative: .indexing
-        case .brokenInternalLinks, .linksToRedirects, .internalNofollow, .orphanPages, .deepPages, .fewInlinks: .links
+        case .brokenInternalLinks, .linksToRedirects, .internalNofollow, .orphanPages, .deepPages, .fewInlinks,
+             .nofollowInlinksOnly, .nonIndexableInlinksOnly, .noInternalOutlinks: .links
         case .hreflangNoReturn, .hreflangNoSelf, .hreflangNoXDefault, .hreflangTargetNon200, .hreflangInvalidCode: .hreflang
         case .duplicateContent, .lowWordCount, .imagesWithoutAlt, .imagesEmptyAlt, .imagesLongAlt: .content
         }
@@ -150,13 +152,13 @@ public enum IssueID: String, Sendable, CaseIterable, Hashable {
         case .titleTooLong, .titleTooShort, .titleMultiple, .descriptionMissing, .descriptionDuplicate,
              .descriptionMultiple, .h1Multiple, .h1Empty, .h1Duplicate, .redirectChain, .noindex,
              .nonIndexableInSitemap, .linksToRedirects, .orphanPages, .urlVariantDuplicate, .headingEmpty, .slowResponse,
-             .imagesWithoutAlt, .canonicalMultipleSame,
+             .imagesWithoutAlt, .canonicalMultipleSame, .nofollowInlinksOnly, .nonIndexableInlinksOnly,
              .hreflangNoReturn, .hreflangNoSelf, .hreflangNoXDefault, .hreflangTargetNon200, .hreflangInvalidCode:
             .warning
         case .descriptionTooShort, .descriptionTooLong, .h1EqualsTitle, .headingSkippedLevel, .headingBeforeH1,
              .redirect3xx, .canonicalOther, .blockedByRobots, .internalNofollow, .deepPages, .fewInlinks,
              .lowWordCount, .imagesEmptyAlt, .imagesLongAlt, .h1TooLong, .h2Missing, .h2TooLong, .h2Duplicate,
-             .canonicalMissing, .canonicalRelative:
+             .canonicalMissing, .canonicalRelative, .noInternalOutlinks:
             .notice
         }
     }
@@ -213,6 +215,9 @@ public enum IssueID: String, Sendable, CaseIterable, Hashable {
         case .orphanPages: "Сирота: есть в sitemap, входящих ссылок нет"
         case .deepPages: "Глубже \(t.maxClickDepth) кликов от главной"
         case .fewInlinks: "Мало входящих ссылок (1–\(t.fewInlinksMax))"
+        case .nofollowInlinksOnly: "На страницу ведут только ссылки с nofollow"
+        case .nonIndexableInlinksOnly: "На страницу ссылаются только неиндексируемые страницы"
+        case .noInternalOutlinks: "Тупик: нет ссылок на другие внутренние страницы"
         case .duplicateContent: "Полный дубль текста"
         case .lowWordCount: "Меньше \(t.minWords) слов"
         case .imagesWithoutAlt: "Картинки без атрибута alt"
@@ -226,7 +231,8 @@ public enum IssueID: String, Sendable, CaseIterable, Hashable {
         switch self {
         case .titleDuplicate, .descriptionDuplicate, .h1Duplicate, .h2Duplicate, .duplicateContent, .urlVariantDuplicate,
              .orphanPages, .deepPages, .fewInlinks, .brokenInternalLinks, .linksToRedirects, .canonicalToNon200,
-             .redirectChain, .redirectLoop, .hreflangNoReturn, .hreflangTargetNon200:
+             .redirectChain, .redirectLoop, .hreflangNoReturn, .hreflangTargetNon200,
+             .nofollowInlinksOnly, .nonIndexableInlinksOnly:
             true
         default:
             false
@@ -287,6 +293,10 @@ public enum CrawlAnalyzer {
         var adjacency: [Int32: [Int32]] = [:]
         /// Цели hreflang по странице-источнику.
         var hreflangTargets: [Int32: [Int32]] = [:]
+        /// № 102: цели, на которые есть хоть одна внутренняя ссылка без nofollow с другой страницы,
+        /// и страницы, у которых есть внутренняя ссылка на другую страницу (ссылка на себя тупик не отменяет).
+        var followedTargets: Set<Int32> = []
+        var linksToOthers: Set<Int32> = []
         for (i, l) in data.links.enumerated() {
             a.outlinks[l.source, default: []].append(i)
             a.inlinks[l.target, default: []].append(i)
@@ -314,6 +324,8 @@ public enum CrawlAnalyzer {
             if l.target != l.source {
                 a.metrics[l.target]?.inlinks += 1
                 uniqueSources[l.target, default: []].insert(l.source)
+                linksToOthers.insert(l.source)
+                if !l.rel.contains(.nofollow) { followedTargets.insert(l.target) }
             }
             if let target = data.page(l.target) {
                 if target.state == .failed || target.statusCode >= 400 { a.metrics[l.source]?.brokenOutlinks += 1 }
@@ -492,11 +504,18 @@ public enum CrawlAnalyzer {
                 if m.brokenOutlinks > 0 { add(.brokenInternalLinks) }
                 if m.redirectOutlinks > 0 { add(.linksToRedirects) }
                 if m.nofollowOutlinks > 0 { add(.internalNofollow) }
+                if !linksToOthers.contains(p.id) { add(.noInternalOutlinks) }
 
+                // Входящие считаются только в режиме «паук»: в списке URL они неполные.
+                // Неиндексируемой странице вес не нужен, поэтому проверки по входящим — только для индексируемых.
                 if isSpider, m.indexability.isIndexable, p.id != data.startId {
                     if data.sitemapIds.contains(p.id), m.uniqueInlinks == 0 { add(.orphanPages) }
                     if let d = m.depth, d > t.maxClickDepth { add(.deepPages) }
                     if (1...max(1, t.fewInlinksMax)).contains(m.uniqueInlinks) { add(.fewInlinks) }
+                    if let sources = uniqueSources[p.id], !sources.isEmpty {
+                        if !followedTargets.contains(p.id) { add(.nofollowInlinksOnly) }
+                        if !sources.contains(where: { a.metrics[$0]?.indexability.isIndexable == true }) { add(.nonIndexableInlinksOnly) }
+                    }
                 }
             }
 

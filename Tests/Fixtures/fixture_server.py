@@ -9,16 +9,18 @@ from urllib.parse import quote, unquote, urlsplit
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 18990
 BASE = f"http://127.0.0.1:{PORT}"
 
-def page(title, h1, body, desc="Описание страницы тестового сайта SEOpars для проверки парсера, достаточно длинное.", extra_head="", h2=None):
+def page(title, h1, body, desc="Описание страницы тестового сайта SEOpars для проверки парсера, достаточно длинное.", extra_head="", h2=None, bare=False):
     # H2 в конце контента, свой у каждой страницы (№ 106): иначе «нет H2» и «дубль H2» были бы везде.
-    # h2=False — страница без H2.
+    # h2=False — страница без H2. bare=True — без шапки, меню и подвала, то есть без их ссылок (№ 102, тупик).
     h2_html = "" if h2 is False else f"<h2>{h2 if h2 is not None else 'Подробнее: ' + h1}</h2>"
+    header = "" if bare else """<header><a href="/">Главная</a></header>
+<nav><a href="/about/">О нас</a> <a href="/каталог/">Каталог</a></nav>"""
+    footer = "" if bare else """<footer><a href="/about/">О компании</a> <a href="https://external.example.org/">Партнёр</a></footer>"""
     return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <title>{title}</title><meta name="description" content="{desc}">{extra_head}</head>
-<body><header><a href="/">Главная</a></header>
-<nav><a href="/about/">О нас</a> <a href="/каталог/">Каталог</a></nav>
+<body>{header}
 <main><h1>{h1}</h1>{body}{h2_html}</main>
-<footer><a href="/about/">О компании</a> <a href="https://external.example.org/">Партнёр</a></footer></body></html>"""
+{footer}</body></html>"""
 
 LOREM = "<p>" + " ".join(["слово"] * 120) + "</p>"
 
@@ -49,6 +51,7 @@ ROUTES = {
         <a href="/hreflang/ru/">Hreflang ru</a> <a href="/hreflang/no-return">Hreflang без обратной</a>
         <a href="/hreflang/no-self-ru">Hreflang без себя</a> <a href="/hreflang/no-xdefault">Hreflang без x-default</a>
         <a href="/hreflang/broken">Hreflang на 404</a> <a href="/hreflang/bad-code">Hreflang с неверным кодом</a>
+        <a href="/nofollow-only" rel="nofollow">Только nofollow</a> <a href="/dead-end">Тупик</a>
         """), "text/html; charset=utf-8"),
     "/about/": (200, page("О компании — тестовый сайт SEOpars для парсера", "О компании", LOREM), "text/html; charset=utf-8"),
     "/about": (200, page("О компании — тестовый сайт SEOpars для парсера", "О компании", LOREM), "text/html; charset=utf-8"),
@@ -58,7 +61,8 @@ ROUTES = {
     "/redirect-step": (302, "/about/", None),
     "/error": (500, "<h1>500</h1>", "text/html"),
     "/blocked/secret": (200, page("Секрет", "Секрет", ""), "text/html; charset=utf-8"),
-    "/noindex-page": (200, page("Страница с noindex на тестовом сайте SEOpars", "Noindex", LOREM, extra_head='<meta name="robots" content="noindex, follow">'), "text/html; charset=utf-8"),
+    "/noindex-page": (200, page("Страница с noindex на тестовом сайте SEOpars", "Noindex", LOREM + '<a href="/from-noindex">Ссылка только отсюда</a>',
+        extra_head='<meta name="robots" content="noindex, follow">'), "text/html; charset=utf-8"),
     "/canonical-other": (200, page("Страница с canonical на другой адрес SEOpars", "Canonical", LOREM, extra_head=f'<link rel="canonical" href="{BASE}/about/">'), "text/html; charset=utf-8"),
     "/loop-a": (301, "/loop-b", None),
     "/loop-b": (301, "/loop-a", None),
@@ -93,6 +97,12 @@ ROUTES = {
         extra_head=f'<link rel="canonical" href="{BASE}/canonical-two-diff"><link rel="canonical" href="{BASE}/about/">'), "text/html; charset=utf-8"),
     "/canonical-relative": (200, page("Относительный canonical на сайте SEOpars парсер", "Относительный canonical", LOREM,
         extra_head='<link rel="canonical" href="/canonical-relative">'), "text/html; charset=utf-8"),
+    # № 102: на страницу ведёт только nofollow (с главной); ссылка только с noindex-страницы; тупик.
+    # Уже существующие /deep1 (только nofollow с главной) и /win1251 (ссылок нет) тоже попадают в эти проверки.
+    "/nofollow-only": (200, page("Страница только с nofollow-ссылками на сайте SEOpars", "Только nofollow", LOREM), "text/html; charset=utf-8"),
+    "/from-noindex": (200, page("Страница со ссылкой только с noindex на сайте SEOpars", "Ссылка только с noindex", LOREM), "text/html; charset=utf-8"),
+    "/dead-end": (200, page("Тупик без внутренних ссылок на тестовом сайте SEOpars", "Тупик", LOREM
+        + '<a href="/dead-end">Эта же страница</a> <a href="https://external.example.org/">Внешняя</a>', bare=True), "text/html; charset=utf-8"),
 }
 
 # № 101: правильная пара ru/ ↔ en/ и по странице на каждую ошибку. en/, no-self-en и missing-en (404)

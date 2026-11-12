@@ -98,6 +98,50 @@ import Testing
         #expect(Self.ids(a, .h1TooLong).isEmpty && Self.ids(a, .h2TooLong).isEmpty)
     }
 
+    // MARK: № 102, п. 1.3
+
+    @Test func linkGraphChecks() {
+        let u = ["", "about", "nofollow-only", "noindex", "from-noindex", "dead-end", "mixed", "canonicalized"]
+        let pages = u.enumerated().map { i, path in
+            Self.page(Int32(i), "https://e.com/" + path) { info in
+                if path == "noindex" { info.metaRobots = ["noindex, follow"] }
+            }
+        }
+        func link(_ s: Int32, _ t: Int32, _ rel: RelFlags = [], kind: LinkKind = .anchor, external: Bool = false) -> LinkRecord {
+            LinkRecord(source: s, target: t, anchor: "a", rel: rel, kind: kind, zone: .content, external: external)
+        }
+        let links = [
+            link(0, 1), link(0, 2, .nofollow), link(0, 3, .nofollow), link(0, 5), link(0, 6, .nofollow),
+            link(1, 0), link(1, 2, .nofollow), link(1, 6),
+            link(2, 0),
+            link(3, 0), link(3, 4),
+            link(4, 0),
+            // Тупик: ссылка на себя и внешняя ссылка не в счёт.
+            link(5, 5), link(5, 99, external: true),
+            link(6, 0),
+            link(7, 1, kind: .canonical), link(7, 4),
+        ]
+        var d = Self.crawl(pages, links: links)
+        var a = CrawlAnalyzer.analyze(d)
+        #expect(a.metrics[7]?.indexability == .canonicalized)
+        // 3 (noindex) тоже связана только через nofollow, но неиндексируемой странице вес не нужен.
+        #expect(Self.ids(a, .nofollowInlinksOnly) == [2])
+        // У 4 оба источника неиндексируемые: noindex и canonical на другой адрес.
+        #expect(Self.ids(a, .nonIndexableInlinksOnly) == [4])
+        #expect(Self.ids(a, .noInternalOutlinks) == [5])
+        let graphChecks: Set<IssueID> = [.nofollowInlinksOnly, .nonIndexableInlinksOnly, .noInternalOutlinks]
+        #expect(graphChecks.isDisjoint(with: a.metrics[1]?.issues ?? []))
+        #expect(IssueID.nofollowInlinksOnly.severity == .warning && IssueID.nonIndexableInlinksOnly.severity == .warning)
+        #expect(IssueID.noInternalOutlinks.severity == .notice)
+        #expect(IssueID.nofollowInlinksOnly.needsFullCrawl && !IssueID.noInternalOutlinks.needsFullCrawl)
+
+        // Список URL: входящие неполные, проверки по ним молчат; тупик виден по самой странице.
+        d.config.mode = .list
+        a = CrawlAnalyzer.analyze(d)
+        #expect(Self.ids(a, .nofollowInlinksOnly).isEmpty && Self.ids(a, .nonIndexableInlinksOnly).isEmpty)
+        #expect(Self.ids(a, .noInternalOutlinks) == [5])
+    }
+
     // MARK: № 100, п. 1.1
 
     @Test func canonicalChecks() {

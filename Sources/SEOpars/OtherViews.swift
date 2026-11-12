@@ -344,6 +344,8 @@ struct IssueDetail: View {
             case .brokenInternalLinks: return "битых: \(m?.brokenOutlinks ?? 0)"
             case .linksToRedirects: return "на редирект: \(m?.redirectOutlinks ?? 0)"
             case .internalNofollow: return "nofollow: \(m?.nofollowOutlinks ?? 0)"
+            // У тупика все внутренние исходящие — ссылки на себя.
+            case .noInternalOutlinks: return "на себя: \(m?.outInternal ?? 0), внешних: \(m?.outExternal ?? 0)"
             default: return "входящих: \(r.inlinks), уникальных: \(r.uniqueInlinks)"
             }
         case .content:
@@ -391,6 +393,12 @@ enum IssueHelp {
             "Адрес есть в sitemap, но ни одна обойдённая страница на него не ссылается."
         case .deepPages:
             "Глубина — кратчайший путь в кликах от стартовой страницы по ссылкам и редиректам."
+        case .nofollowInlinksOnly:
+            "Индексируемая страница, на которую все внутренние ссылки с других страниц стоят с rel=\"nofollow\". Считаются ссылки с обойдённых страниц, только в режиме «паук». Источники — вкладка «Входящие» инспектора."
+        case .nonIndexableInlinksOnly:
+            "Индексируемая страница, на которую ссылаются только неиндексируемые страницы: с noindex или с canonical на другой адрес. Считаются ссылки с обойдённых страниц, только в режиме «паук». Источники — вкладка «Входящие» инспектора."
+        case .noInternalOutlinks:
+            "На странице нет ссылок на другие внутренние страницы. Ссылка на саму себя и внешние ссылки не в счёт. Ссылки, которые строит JavaScript, без отрисовки не видны."
         case .urlVariantDuplicate:
             "Адреса отличаются только слэшем на конце или регистром и оба отдают 200. Нужен редирект или canonical."
         case .headingSkippedLevel:
